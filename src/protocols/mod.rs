@@ -6,7 +6,7 @@
 
 pub mod core;
 pub mod errors;
-
+pub mod schal;
 use crate::sev::vmsa::{GuestVMExit, VMSA};
 
 #[derive(Debug, Default, Clone, Copy)]

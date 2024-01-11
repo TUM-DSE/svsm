@@ -422,7 +422,7 @@ pub extern "C" fn svsm_main() {
     // Uncomment the line below if you want to wait for
     // a remote GDB connection
     //debug_break();
-
+    
     let config = SvsmConfig::FirmwareConfig(FwCfg::new(&CONSOLE_IO));
 
     invalidate_stage2(&config).expect("Failed to invalidate Stage2 memory");

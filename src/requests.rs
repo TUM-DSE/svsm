@@ -14,7 +14,7 @@ use crate::protocols::RequestParams;
 use crate::sev::vmsa::GuestVMExit;
 use crate::types::GUEST_VMPL;
 use crate::utils::halt;
-
+use crate::protocols::schal::schal_request;
 /// Returns true if there is a valid VMSA mapping
 pub fn update_mappings() -> Result<(), SvsmError> {
     let mut locked = this_cpu_mut().guest_vmsa_ref();
@@ -66,6 +66,7 @@ fn request_loop_once(
 
     match protocol {
         0 => core_protocol_request(request, params).map(|_| true),
+        5 => schal_request(request,params).map(|_| true),
         _ => Err(SvsmReqError::unsupported_protocol()),
     }
 }
