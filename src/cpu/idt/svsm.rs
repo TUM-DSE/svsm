@@ -3,7 +3,7 @@
 // Copyright (c) 2022-2023 SUSE LLC
 //
 // Authors: Joerg Roedel <jroedel@suse.de>
-
+#![allow(static_mut_ref)]
 use super::super::control_regs::read_cr2;
 use super::super::extable::handle_exception_table;
 use super::super::percpu::this_cpu;

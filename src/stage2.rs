@@ -6,7 +6,7 @@
 
 #![no_std]
 #![no_main]
-
+#![allow(static_mut_ref)]
 pub mod boot_stage2;
 
 use core::arch::asm;

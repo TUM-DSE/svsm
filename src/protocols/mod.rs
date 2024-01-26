@@ -13,7 +13,7 @@ use crate::sev::vmsa::{GuestVMExit, VMSA};
 pub struct RequestParams {
     pub guest_exit_code: GuestVMExit,
     sev_features: u64,
-    rcx: u64,
+    pub rcx: u64,
     rdx: u64,
     r8: u64,
 }

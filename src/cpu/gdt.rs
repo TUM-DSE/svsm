@@ -3,7 +3,7 @@
 // Copyright (c) 2022-2023 SUSE LLC
 //
 // Author: Joerg Roedel <jroedel@suse.de>
-
+#![allow(static_mut_ref)]
 use super::tss::{X86Tss, TSS_LIMIT};
 use crate::address::VirtAddr;
 use crate::types::{SVSM_CS, SVSM_DS, SVSM_TSS};

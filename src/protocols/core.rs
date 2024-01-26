@@ -42,7 +42,7 @@ struct PValidateRequest {
     resv: u32,
 }
 
-fn core_create_vcpu_error_restore(vaddr: VirtAddr) -> Result<(), SvsmReqError> {
+pub fn core_create_vcpu_error_restore(vaddr: VirtAddr) -> Result<(), SvsmReqError> {
     if let Err(err) = rmp_clear_guest_vmsa(vaddr) {
         log::error!("Failed to restore page permissions: {:#?}", err);
     }
@@ -53,7 +53,7 @@ fn core_create_vcpu_error_restore(vaddr: VirtAddr) -> Result<(), SvsmReqError> {
 }
 
 // VMSA validity checks according to SVSM spec
-fn check_vmsa(new: &VMSA, sev_features: u64, svme_mask: u64) -> bool {
+pub fn check_vmsa(new: &VMSA, sev_features: u64, svme_mask: u64) -> bool {
     new.vmpl == RMPFlags::GUEST_VMPL.bits() as u8
         && new.efer & svme_mask == svme_mask
         && new.sev_features == sev_features

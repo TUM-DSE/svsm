@@ -248,7 +248,7 @@ impl PageTable {
         self.root.entries[entry] = other.root.entries[entry];
     }
 
-    fn allocate_page_table() -> Result<*mut PTPage, SvsmError> {
+    pub fn allocate_page_table() -> Result<*mut PTPage, SvsmError> {
         let ptr = allocate_zeroed_page()?;
         Ok(ptr.as_mut_ptr::<PTPage>())
     }

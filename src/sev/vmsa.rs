@@ -62,7 +62,7 @@ pub struct VMSASegment {
 }
 
 #[repr(C, packed)]
-#[derive(Debug)]
+#[derive(Debug,Copy,Clone)]
 pub struct VMSA {
     pub es: VMSASegment,
     pub cs: VMSASegment,

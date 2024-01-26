@@ -7,7 +7,7 @@
 use crate::cpu::flush_tlb_global_sync;
 use crate::cpu::percpu::{this_cpu, this_cpu_mut};
 use crate::error::SvsmError;
-use crate::mm::GuestPtr;
+use crate::mm::{virt_to_phys, GuestPtr};
 use crate::protocols::core::core_protocol_request;
 use crate::protocols::errors::{SvsmReqError, SvsmResultCode};
 use crate::protocols::RequestParams;
@@ -15,6 +15,7 @@ use crate::sev::vmsa::GuestVMExit;
 use crate::types::GUEST_VMPL;
 use crate::utils::halt;
 use crate::protocols::schal::schal_request;
+use crate::mm::SVSM_PERCPU_VMSA_BASE;
 /// Returns true if there is a valid VMSA mapping
 pub fn update_mappings() -> Result<(), SvsmError> {
     let mut locked = this_cpu_mut().guest_vmsa_ref();
@@ -112,21 +113,39 @@ pub fn request_loop() {
                 break;
             }
         };
-
         // Write back results
         params.write_back(vmsa);
+        if protocol == 5 {
+            //We want to change to VMPL3 instead of VMPL2 
+            //This currently causes a VMGEXITERROR
+            vmsa.enable();
+            flush_tlb_global_sync();
+            if update_mappings().is_ok() {
+                let ghcb = this_cpu_mut().ghcb();
+                    ghcb
+                    .run_vmpl(3 as u64)
+                    .expect("Failed to run guest VMPL 3");
+            }
+        } else {
 
-        // Make VMSA runable again by setting EFER.SVME
-        vmsa.enable();
+            
+            
 
-        flush_tlb_global_sync();
+            // Make VMSA runable again by setting EFER.SVME
+            vmsa.enable();
 
-        // Check if mappings still valid
-        if update_mappings().is_ok() {
-            this_cpu_mut()
-                .ghcb()
-                .run_vmpl(GUEST_VMPL as u64)
-                .expect("Failed to run guest VMPL");
+            flush_tlb_global_sync();
+
+            // Check if mappings still valid
+            if update_mappings().is_ok() {
+                let ghcb = this_cpu_mut().ghcb();
+                    ghcb
+                    .run_vmpl(GUEST_VMPL as u64)
+                    .expect("Failed to run guest VMPL");
+            }
+
+
         }
+
     }
 }

@@ -3,7 +3,7 @@
 // Copyright (c) 2022-2023 SUSE LLC
 //
 // Author: Joerg Roedel <jroedel@suse.de>
-
+#![allow(static_mut_ref)]
 use super::common::{load_idt, Idt, IdtEntry, DF_VECTOR, GLOBAL_IDT, VC_VECTOR};
 use crate::address::VirtAddr;
 use crate::cpu::control_regs::read_cr2;

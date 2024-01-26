@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
+#![allow(static_mut_ref)]
 
 extern crate alloc;
 
@@ -52,7 +53,12 @@ use svsm::types::{PageSize, GUEST_VMPL, PAGE_SIZE};
 use svsm::utils::{halt, immut_after_init::ImmutAfterInitCell, zero_mem_region, MemoryRegion};
 
 use svsm::mm::validate::{init_valid_bitmap_ptr, migrate_valid_bitmap};
-
+use core::panic;
+use core::result::Result::Ok;
+use core::option::Option::Some;
+use core::result::Result;
+use core::assert;
+use core::result::Result::Err;
 use core::ptr;
 
 extern "C" {

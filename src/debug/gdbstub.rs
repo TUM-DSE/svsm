@@ -9,7 +9,10 @@
 // binary. See the bottom of this file for placeholders that are
 // used when the gdb stub is disabled.
 //
+
+#![allow(static_mut_ref)]
 #[cfg(feature = "enable-gdb")]
+
 pub mod svsm_gdbstub {
     extern crate alloc;
 

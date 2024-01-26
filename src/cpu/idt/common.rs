@@ -3,7 +3,7 @@
 // Copyright (c) 2022-2023 SUSE LLC
 //
 // Author: Joerg Roedel <jroedel@suse.de>
-
+#![allow(static_mut_ref)]
 use crate::address::{Address, VirtAddr};
 use crate::cpu::registers::{X86GeneralRegs, X86InterruptFrame};
 use crate::types::SVSM_CS;
