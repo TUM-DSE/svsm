@@ -187,9 +187,11 @@ pub fn schal_create_process(params: &mut RequestParams) -> Result<(),SvsmReqErro
     let new_virt_pages = virtrange.alloc(1,0).expect("Unable to allocate page");
     ptr.map_region_4k(new_virt_pages, new_virt_pages+PAGE_SIZE, paddr_pages, PTEntryFlags::exec()).expect("Unable to map page to page table");
     
+
     let new_virt_stack = virtrange.alloc(1, 0)?;
     ptr.map_region_4k(new_virt_stack, new_virt_stack+PAGE_SIZE, paddr_stack, PTEntryFlags::data())?;
 
+    log::info!("Exec: {:#X} {:#X}\n stack: {:#X} {:#X}",usize::from(new_virt_pages),usize::from( paddr_pages), usize::from(new_virt_stack), usize::from(paddr_stack));
 
     //
 
@@ -261,8 +263,10 @@ pub fn schal_create_process(params: &mut RequestParams) -> Result<(),SvsmReqErro
     PERCPU_VMSAS.register(paddr_vmsa, apic_id, true)?;
 
     assert!(PERCPU_VMSAS.set_used(paddr_vmsa) == Some(apic_id));
-    target_cpu.update_guest_vmsa(paddr_vmsa);
- 
+    log::info!("Creating new VMPL zone if it does not yet exsit");
+    this_cpu_mut().ghcb().ap_create(paddr_vmsa,u64::from(apic_id), 3, params.sev_features)?;
+    //target_cpu.update_guest_vmsa(paddr_vmsa);
+    
     log::info!("");
    
     Ok(())
