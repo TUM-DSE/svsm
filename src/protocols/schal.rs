@@ -23,7 +23,7 @@ use crate::protocols::schal::pagetable::PageTableRef;
 use crate::mm::pagetable::PageTable;
 use crate::mm::virtualrange;
 use crate::protocols::schal::pagetable::PTEntryFlags;
-
+use core::mem::replace;
 pub fn check_vmsa_ind(new: &VMSA, sev_features: u64, svme_mask: u64, vmpl_level: u64) -> bool {
     new.vmpl == vmpl_level as u8
         && new.efer & svme_mask == svme_mask
@@ -38,7 +38,7 @@ pub fn schal_nothing(params: &mut RequestParams) -> Result<(),SvsmReqError>{
     Ok(())
 }
 
-fn copy_vmsa(v: &mut VMSA, vin: &VMSA){
+/*fn copy_vmsa(v: &mut VMSA, vin: &VMSA){
     v.es = vin.es;
     v.cs = vin.cs;
     v.ss = vin.ss;
@@ -148,7 +148,7 @@ fn copy_vmsa(v: &mut VMSA, vin: &VMSA){
     v.fpreg_ymm = vin.fpreg_ymm;
     v.reserved_670 = vin.reserved_670;
 
-}
+}*/
 
 pub fn schal_create_process(params: &mut RequestParams) -> Result<(),SvsmReqError>{
     log::info!("## Starting with new process creation ##");
@@ -216,6 +216,7 @@ pub fn schal_create_process(params: &mut RequestParams) -> Result<(),SvsmReqErro
     
     flush_tlb_global_sync();
 
+    //TODO: Set the correct permissions for the page table
     log::info!("Changin VMPL level or page table");
     for i in 1..10 {
         rmp_adjust(vaddr_pagetable + (i-1)*4096, RMPFlags::VMPL3 | RMPFlags::VMPL2 | RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular)?;
@@ -234,19 +235,20 @@ pub fn schal_create_process(params: &mut RequestParams) -> Result<(),SvsmReqErro
     )?;
     let vmsa = VMSA::from_virt_addr(vaddr_vmsa);
     zero_mem_region(vaddr_vmsa, vaddr_vmsa + PAGE_SIZE);
-    copy_vmsa(vmsa, &this_cpu_mut().guest_vmsa());
+    _ = replace(vmsa,*this_cpu_mut().guest_vmsa());
+    //copy_vmsa(vmsa, &this_cpu_mut().guest_vmsa());
 
     vmsa.vmpl = 3 as u8;
     vmsa.cr3 = u64::from(ptr.cr3_value());
-    vmsa.rbp = u64::from(new_virt_stack);
-    vmsa.rsp = u64::from(new_virt_stack);
-    vmsa.efer = vmsa.efer ^ 1u64 << 12;
+    vmsa.rbp = u64::from(new_virt_stack)+4096;
+    vmsa.rsp = u64::from(new_virt_stack)+4096;
+    vmsa.efer = vmsa.efer | 1u64 << 12;
     vmsa.rip = u64::from(new_virt_pages);
     log::info!("cr3: {:#X}, rbp: {:#X}, rsp: {:#X}, rip: {:#X}, 
     cr0: {:#X},cr2: {:#X},cr3: {:#X},cr4: {:#X}",
     u64::from(vmsa.cr3), u64::from(vmsa.rbp), u64::from(vmsa.rsp), u64::from(vmsa.rip)
     , u64::from(vmsa.cr0), u64::from(vmsa.cr2), u64::from(vmsa.cr3), u64::from(vmsa.cr4));
-    
+    log::info!("'stack-start': {:#X}", u64::from(new_virt_stack));
     log::info!("Checking VMSA correctness");
 
     let svme_mask: u64 = 1u64 << 12;
@@ -273,7 +275,7 @@ pub fn schal_create_process(params: &mut RequestParams) -> Result<(),SvsmReqErro
     //target_cpu.update_guest_vmsa(paddr_vmsa);
     
     log::info!("");
-   
+    
     Ok(())
 }
 
