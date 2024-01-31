@@ -212,16 +212,16 @@ pub fn schal_create_process(params: &mut RequestParams) -> Result<(),SvsmReqErro
     rmp_adjust(vaddr_vmsa, RMPFlags::VMPL3 | RMPFlags::RWX, PageSize::Regular)?;
     rmp_adjust(vaddr_pages, RMPFlags::VMPL2 | RMPFlags::NONE, PageSize::Regular)?;
     rmp_adjust(vaddr_stack, RMPFlags::VMPL2 | RMPFlags::RWX, PageSize::Regular)?;
-    rmp_adjust(vaddr_vmsa, RMPFlags::VMPL2 | RMPFlags::NONE, PageSize::Regular)?;
+    rmp_adjust(vaddr_vmsa, RMPFlags::VMPL2 | RMPFlags::VMPL3 | RMPFlags::VMPL1 | RMPFlags::VMPL0 | RMPFlags::VMSA, PageSize::Regular)?;
     
     flush_tlb_global_sync();
 
-
+    log::info!("Changin VMPL level or page table");
+    for i in 1..10 {
+        rmp_adjust(vaddr_pagetable + (i-1)*4096, RMPFlags::VMPL3 | RMPFlags::VMPL2 | RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular)?;
+    }
+    //rmp_adjust(vaddr_pagetable + 4096 , RMPFlags::VMPL3 | RMPFlags::VMPL2 | RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular)?;
     
-
-
-
-
     flush_tlb_global_sync();
 
     log::info!("Creating new VMSA");
@@ -242,6 +242,11 @@ pub fn schal_create_process(params: &mut RequestParams) -> Result<(),SvsmReqErro
     vmsa.rsp = u64::from(new_virt_stack);
     vmsa.efer = vmsa.efer ^ 1u64 << 12;
     vmsa.rip = u64::from(new_virt_pages);
+    log::info!("cr3: {:#X}, rbp: {:#X}, rsp: {:#X}, rip: {:#X}, 
+    cr0: {:#X},cr2: {:#X},cr3: {:#X},cr4: {:#X}",
+    u64::from(vmsa.cr3), u64::from(vmsa.rbp), u64::from(vmsa.rsp), u64::from(vmsa.rip)
+    , u64::from(vmsa.cr0), u64::from(vmsa.cr2), u64::from(vmsa.cr3), u64::from(vmsa.cr4));
+    
     log::info!("Checking VMSA correctness");
 
     let svme_mask: u64 = 1u64 << 12;
