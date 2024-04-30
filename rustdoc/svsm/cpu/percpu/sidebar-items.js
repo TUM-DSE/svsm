@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["current_task","process_requests","this_cpu","this_cpu_mut","this_cpu_shared","this_cpu_unsafe","wait_for_requests"],"static":["PERCPU_AREAS","PERCPU_VMSAS"],"struct":["GuestVmsaRef","IstStacks","PerCpu","PerCpuAreas","PerCpuInfo","PerCpuShared","PerCpuUnsafe","PerCpuVmsas","VmsaRef","VmsaRegistryEntry"]};

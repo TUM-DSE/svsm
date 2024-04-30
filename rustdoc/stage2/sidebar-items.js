@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["check_launch_info","init_percpu","map_and_validate","panic","setup_env","setup_stage2_allocator","shutdown_percpu","stage2_main"],"mod":["boot_stage2"],"static":["CONSOLE_SERIAL","CPUID_PAGE","heap_end","heap_start","pgtable"]};
