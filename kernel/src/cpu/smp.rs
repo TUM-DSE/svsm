@@ -8,6 +8,7 @@ use crate::acpi::tables::ACPICPUInfo;
 use crate::cpu::ghcb::current_ghcb;
 use crate::cpu::percpu::{this_cpu_mut, this_cpu_shared, PerCpu};
 use crate::cpu::vmsa::init_svsm_vmsa;
+use crate::cpu::sse::sse_init;
 use crate::platform::SvsmPlatform;
 use crate::platform::SVSM_PLATFORM;
 use crate::process_manager::monitor_init;
@@ -80,6 +81,7 @@ fn start_ap() {
     // Set CPU online so that BSP can proceed
     this_cpu_shared().set_online();
 
+    sse_init();
     schedule_init();
 }
 
