@@ -112,7 +112,7 @@ pub fn construct_vmsa(
 
     let mut features = SevFeatures::new();
     features.set_snp(true);
-    features.set_restrict_injection(true);
+    features.set_restrict_injection(false);
     if vtom != 0 {
         vmsa.virtual_tom = vtom;
         features.set_vtom(true);
