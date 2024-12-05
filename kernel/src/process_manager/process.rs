@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use crate::address::PhysAddr;
 use crate::cpu::percpu::this_cpu_shared;
 use crate::cpu::percpu::this_cpu_unsafe;
+use crate::mm::pagetable::PageTableRef;
 use crate::mm::SVSM_PERCPU_VMSA_BASE;
 use crate::process_manager::process_memory::allocate_page;
 use crate::process_manager::allocation::AllocationRange;
@@ -363,6 +364,16 @@ impl Default for ProcessContext {
 impl ProcessContext {
 
     pub fn init(&mut self, base: ProcessBaseContext) {
+        // @base: the base context of the process
+        //
+        // This function is called to create a Trustlet from a Zygote
+
+        // Setup a new page table for the Process
+        // FIXME: this performs full deep copy of memory and page table from the base
+        // TODO:  implement proper CoW
+        let mut new_page_table_ref = ProcessPageTableRef::default();
+        new_page_table_ref.init_vmpl1();
+        new_page_table_ref.copy_from(&base.page_table_ref);
 
         //Creating new VMSA for the Process
         let new_vmsa_page = allocate_page();
@@ -384,7 +395,8 @@ impl ProcessContext {
         //New VMSA Setup
         vmsa.vmpl = 1; // Trustlets always run in VMPL1
         vmsa.cpl = 3; // Ring 3
-        vmsa.cr3 = u64::from(base.page_table_ref.process_page_table);
+        //vmsa.cr3 = u64::from(base.page_table_ref.process_page_table);
+        vmsa.cr3 = u64::from(new_page_table_ref.process_page_table);
         vmsa.efer = vmsa.efer | 1u64 << 12;
         vmsa.rip = base.entry_point.into();
         vmsa.sev_features = old_vmsa_ptr.sev_features | 4; // 4 is for #VC Reflect
