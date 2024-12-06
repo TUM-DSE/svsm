@@ -155,7 +155,7 @@ impl ProcessRuntime for PALContext  {
     /// * rdx: edx value of the cpuid result
     fn pal_svsm_cpuid(&mut self) -> bool {
         let eax =  self.vmsa.rax as u32;
-        log::info!("eax value: {:#x}",eax);
+        // log::info!("[pal_svsm_cpuid] eax value: {:#x}",eax);
         let eax_tmp = self.vmsa.rax;
         let ecx_tmp = self.vmsa.rcx;
         // Some cpuid leafs have subleaf (ecx) and some don't
@@ -179,13 +179,8 @@ impl ProcessRuntime for PALContext  {
         self.vmsa.rbx = res.ebx as u64;
         self.vmsa.rcx = res.ecx as u64;
         self.vmsa.rdx = res.edx as u64;
-        log::info!("Returned CPUID({:#x}/{:#x}) as the following: {:#x} {:#x} {:#x} {:#x}",
-        eax_tmp,
-        ecx_tmp,
-        res.eax,
-        res.ebx,
-        res.ecx,
-        res.edx);
+        // log::info!("[pal_svsm_cpuid] Returned CPUID({:#x}/{:#x}) as the following: {:#x} {:#x} {:#x} {:#x}",
+        //             eax_tmp, ecx_tmp, res.eax, res.ebx, res.ecx, res.edx);
         return true;
     }
 
