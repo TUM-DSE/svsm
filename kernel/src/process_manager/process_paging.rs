@@ -289,7 +289,7 @@ impl ProcessPageTableRef {
     pub fn add_function(&self, data:VirtAddr, size: u64) {
         let data: *mut u8 = data.as_mut_ptr::<u8>();
         let data = unsafe { slice::from_raw_parts(data, size as usize) };
-        self.add_region_vaddr(VirtAddr::from(0xFE8000000000u64), data);
+        self.add_region_vaddr(VirtAddr::from(0x140_0000_0000u64), data);
     }
 
     pub fn add_pages(&self, start: VirtAddr, size: u64, flags: ProcessPageFlags) {

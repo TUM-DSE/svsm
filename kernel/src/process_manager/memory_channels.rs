@@ -2,8 +2,8 @@ use crate::{address::VirtAddr, mm::PAGE_SIZE, process_manager::process_memory::A
 
 use super::{allocation::AllocationRange, process::ProcessID, process_paging::ProcessPageTableRef};
 
-pub const INPUT_VADDR: u64 = 0xFF0000000000u64;
-pub const OUTPUT_VADDR: u64 = 0xFF8000000000u64;
+pub const INPUT_VADDR: u64 = 0x200_0000_0000u64;
+pub const OUTPUT_VADDR: u64 = 0x200_0000_8000u64;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MemoryChannel {
