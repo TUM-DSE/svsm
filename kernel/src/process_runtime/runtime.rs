@@ -3,12 +3,14 @@ use igvm_defs::PAGE_SIZE_4K;
 use core::ffi::CStr;
 use core::str;
 use crate::{address::VirtAddr, cpu::{cpuid::{cpuid_table_raw, CpuidResult}, percpu::{this_cpu, this_cpu_unsafe}}, map_paddr, mm::{PerCPUPageMappingGuard, PAGE_SIZE}, paddr_as_slice, process_manager::{process::{ProcessID, TrustedProcess, PROCESS_STORE}, process_memory::allocate_page, process_paging::{ProcessPageFlags, ProcessPageTableRef}}, protocols::{errors::SvsmReqError, RequestParams}};
+use crate::process_manager::memory_channels::{INPUT_VADDR, OUTPUT_VADDR};
 
 use crate::vaddr_as_slice; 
 use crate::types::PageSize;
 use crate::sev::RMPFlags;
 use crate::sev::rmp_adjust;
 use core::arch::asm;
+use core::slice;
 
 const TRUSTLET_VMPL: u64 = 1;
 
@@ -39,6 +41,7 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let id = params.rcx;
     let function_arg = params.r8;
     let function_arg_size = params.r9;
+    let guest_pgt = params.rdx;
 
     let trustlet = PROCESS_STORE.get(ProcessID(id.try_into().unwrap()));
 
@@ -55,7 +58,19 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let mut string_pos: usize = 0;
     let sev_features = trustlet.context.sev_features;
 
-    trustlet.context.channel.copy_into(function_arg, vmsa.cr3, function_arg_size as usize);
+    // Copy the function arguments from the guest to the Trustlet's input channel
+    let (function_data, function_range) = ProcessPageTableRef::copy_data_from_guest(function_arg, function_arg_size, guest_pgt);
+    let function_data = function_data.as_ptr::<u64>();
+    let function_data = unsafe { slice::from_raw_parts(function_data, function_arg_size as usize) };
+    log::info!("Function Data: {:?}, size={}", function_data, function_arg_size);
+    let mut page_table_ref = ProcessPageTableRef::default();
+    page_table_ref.set_external_table(vmsa.cr3);
+    let paddr = page_table_ref.virt_to_phys(INPUT_VADDR.into());
+    let (mapping, input_mapping) = paddr_as_slice!(paddr, u64);
+    for i in 0..(function_arg_size as usize) {
+        input_mapping[i] = function_data[i];
+    }
+    // trustlet.context.channel.copy_into(function_arg, vmsa.cr3, function_arg_size as usize);
 
 
     let mut rc = PALContext{
@@ -75,14 +90,23 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
             break;
         }*/
         if !rc.handle_process_request() {
+
+            // Print the output of the Trustlet's output channel
+            page_table_ref.set_external_table(rc.vmsa.cr3);
+            let paddr = page_table_ref.virt_to_phys(OUTPUT_VADDR.into());
+            let (mapping, input_mapping) = paddr_as_slice!(paddr, u64);
+            let mut size = 0;
+            while input_mapping[size] != 0 {
+                size += 1;
+            }
+            let output = unsafe { core::slice::from_raw_parts(input_mapping.as_ptr(), size) };
+            log::info!("Output: {:?}", output);
+
             break;
         }
     }
 
-
     Ok(())
-
-
 }
 
 impl ProcessRuntime for PALContext  {
