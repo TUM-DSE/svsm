@@ -1,3 +1,6 @@
+use crate::types::PageSize;
+use crate::sev::RMPFlags;
+use crate::sev::rmp_adjust;
 use crate::process_manager::process_memory::allocate_page;
 use crate::mm::PAGE_SIZE;
 use crate::address::{Address, VirtAddr};
@@ -37,6 +40,11 @@ impl AllocationRange {
 
         for i in 0..(pages as usize) {
             let current_page = allocate_page();
+            if !mount {
+                let (mapping, _page_mapped) = paddr_as_slice!(current_page);
+                rmp_adjust(mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX , PageSize::Regular).unwrap();
+                let start = start_address + i * PAGE_SIZE;
+            }
             page_table_ref.map_4k_page(start_address + i * PAGE_SIZE, current_page, table_flags);
         };
         if mount {
