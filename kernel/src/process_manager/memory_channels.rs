@@ -1,4 +1,5 @@
 use crate::{address::VirtAddr, mm::PAGE_SIZE, process_manager::process_memory::ALLOCATION_RANGE_VIRT_START};
+use crate::process_manager::process_paging::ProcessPageFlags;
 
 use super::{allocation::AllocationRange, process::ProcessID, process_paging::ProcessPageTableRef};
 
@@ -17,11 +18,17 @@ pub struct MemoryChannel {
 impl MemoryChannel {
 
     pub fn allocate_input(&mut self, page_table_ref: &mut ProcessPageTableRef, size: usize) {
-        self.input = self.allocate_range(page_table_ref, size, INPUT_VADDR);
+        let flags = ProcessPageFlags::PRESENT | ProcessPageFlags::WRITABLE |
+        ProcessPageFlags::USER_ACCESSIBLE | ProcessPageFlags::ACCESSED;
+        page_table_ref.add_pages(VirtAddr::from(INPUT_VADDR), 1, flags);
+        //self.input = self.allocate_range(page_table_ref, size, INPUT_VADDR);
     }
 
     pub fn allocate_output(&mut self, page_table_ref: &mut ProcessPageTableRef, size: usize) {
-        self.output = self.allocate_range(page_table_ref, size, OUTPUT_VADDR);
+        let flags = ProcessPageFlags::PRESENT | ProcessPageFlags::WRITABLE |
+        ProcessPageFlags::USER_ACCESSIBLE | ProcessPageFlags::ACCESSED;
+        page_table_ref.add_pages(VirtAddr::from(OUTPUT_VADDR), 1, flags);
+        //self.output = self.allocate_range(page_table_ref, size, OUTPUT_VADDR);
     }
 
     pub fn inflate_input(&mut self, page_table_ref: &mut ProcessPageTableRef, size: usize) {
@@ -45,7 +52,6 @@ impl MemoryChannel {
         self.input.mount();
 
         page_table_ref.copy_address_range(VirtAddr::from(source_addr), copy_size as u64, target);
-
     }
 
     pub fn copy_out(&mut self, target_addr: u64, page_table: u64, size: usize) {
