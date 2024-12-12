@@ -59,4 +59,8 @@ impl X86Tss {
 
         (GDTEntry::from_raw(desc0), GDTEntry::from_raw(desc1))
     }
+
+    pub fn base(&self) -> u64 {
+        self as *const X86Tss as u64
+    }
 }

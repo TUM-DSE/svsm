@@ -149,6 +149,7 @@ struct IdtDesc {
 }
 
 #[derive(Copy, Clone, Debug)]
+#[repr(align(4096))]
 pub struct IDT {
     entries: [IdtEntry; IDT_ENTRIES],
 }

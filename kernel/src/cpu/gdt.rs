@@ -54,6 +54,7 @@ impl GDTEntry {
 const GDT_SIZE: u16 = 8;
 
 #[derive(Copy, Clone, Debug)]
+#[repr(align(4096))]
 pub struct GDT {
     entries: [GDTEntry; GDT_SIZE as usize],
 }

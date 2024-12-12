@@ -17,6 +17,7 @@ use super::memory_helper::{ZERO_PAGE};
 
 // TP: Trusted Process
 pub const TP_STACK_START_VADDR: u64 = 0x80_0000_0000;
+pub const TP_KERN_STACK_START_VADDR: u64 = 0x90_0000_0000;
 pub const TP_MANIFEST_START_VADDR: u64 = 0x100_0000_0000;
 pub const TP_LIBOS_START_VADDR: u64 = 0x180_0000_0000;
 
