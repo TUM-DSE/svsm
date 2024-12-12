@@ -24,6 +24,7 @@ pub trait ProcessRuntime {
     fn pal_svsm_print_info(&mut self) -> bool;
     fn pal_svsm_set_tcb(&mut self) -> bool;
     fn pal_svsm_cpuid(&mut self) -> bool;
+    fn handle_exception(&mut self) -> bool;
 }
 
 #[derive(Debug)]
@@ -102,9 +103,11 @@ impl ProcessRuntime for PALContext  {
         vmsa.rip += 2;
 
         match rax {
+            // normal cpuid
             0..=23 | 0x80000000..=0x80000021 => {
                 return self.pal_svsm_cpuid();
             }
+            // monitor calls from the Gramine PAL
             0x4FFFFFFF => {
                 return self.pal_svsm_fail();
             }
@@ -126,6 +129,11 @@ impl ProcessRuntime for PALContext  {
             0x4FFFFFF9 => {
                 return self.pal_svsm_mprotect();
             }
+            // monitor calls (other)
+            0x4EFFFFFF => {
+                return self.handle_exception();
+            }
+            // debug
             99 => {
                 let c = vmsa.rbx;
                 log::info!("{}", c);
@@ -500,5 +508,33 @@ impl ProcessRuntime for PALContext  {
         log::info!("RDX: {:#x}", rdx);
 
         return true;
+    }
+
+    /// Handle an exception occured in the trustlet
+    fn handle_exception(&mut self) -> bool {
+        let cr2 = self.vmsa.cr2;
+        let error_code = self.vmsa.rbx;
+        const PF_PRESENT: u64 = 1 << 0;
+        const PF_WRITE: u64 = 1 << 1;
+        const PF_USER: u64 = 1 << 2;
+        const PF_RESERVED: u64 = 1 << 3;
+        const PF_INSTRUCTION: u64 = 1 << 4;
+        log::info!(" [Trustlet] Exception: CR2={:#x}, Error code={:?}", cr2, error_code);
+        if error_code & PF_PRESENT == 0 {
+            log::info!(" [Trustlet] Page fault: not present");
+        }
+        if error_code & PF_WRITE != 0 {
+            log::info!(" [Trustlet] Page fault: write");
+        }
+        if error_code & PF_USER != 0 {
+            log::info!(" [Trustlet] Page fault: user");
+        }
+        if error_code & PF_RESERVED != 0 {
+            log::info!(" [Trustlet] Page fault: reserved");
+        }
+        if error_code & PF_INSTRUCTION != 0 {
+            log::info!(" [Trustlet] Page fault: instruction fetch");
+        }
+        false
     }
 }

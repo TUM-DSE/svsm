@@ -441,8 +441,16 @@ global_asm!(
     .section .text
     .global asm_entry_trustlet_pf
     asm_entry_trustlet_pf:
-       movq $1234, %rax
+       # #PF pushes the error code on the stack
+       pushq %rax
+       pushq %rbx
+       movq 16(%rsp), %rbx      # load error code
+       movq $0x4EFFFFFF, %rax   # monitor call number
        cpuid
+       popq %rbx
+       popq %rax
+       addq $8, %rsp            # remove error code
+       iretq
     "#,
     options(att_syntax)
 );
