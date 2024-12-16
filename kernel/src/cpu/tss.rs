@@ -12,7 +12,7 @@ pub const _IST_INVALID: usize = 0;
 pub const IST_DF: usize = 1;
 
 #[derive(Debug, Default, Clone, Copy)]
-#[repr(C, packed)]
+#[repr(C, packed(4))]
 pub struct X86Tss {
     reserved1: u32,
     pub stacks: [VirtAddr; 3],

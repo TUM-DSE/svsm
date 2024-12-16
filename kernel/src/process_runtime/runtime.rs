@@ -25,6 +25,7 @@ pub trait ProcessRuntime {
     fn pal_svsm_set_tcb(&mut self) -> bool;
     fn pal_svsm_cpuid(&mut self) -> bool;
     fn handle_exception(&mut self) -> bool;
+    fn handle_df(&mut self) -> bool;
 }
 
 #[derive(Debug)]
@@ -133,6 +134,9 @@ impl ProcessRuntime for PALContext  {
             0x4EFFFFFF => {
                 return self.handle_exception();
             }
+            0x4EFFFFFE => {
+                return self.handle_df();
+            }
             // debug
             99 => {
                 let c = vmsa.rbx;
@@ -147,6 +151,9 @@ impl ProcessRuntime for PALContext  {
             }
             _ => {
                 log::info!("Unknown request code: {} (rip={:x})", rax, rip);
+                let rbx = vmsa.rbx;
+                log::info!("rbx {:?}", rbx);
+                log::info!("vmsa CS: {:?}", self.vmsa.cs);
                 return false;
             }
 
@@ -343,7 +350,7 @@ impl ProcessRuntime for PALContext  {
         let fd = self.vmsa.r8;
         let offset = self.vmsa.r9;
 
-        log::info!("{:#}, {}", addr, size);
+        log::info!("[pal_svsm_map] addr={:#x}, size={}", addr, size);
 
         let page_table = self.vmsa.cr3;
         let mut page_table_ref = ProcessPageTableRef::default();
@@ -362,8 +369,11 @@ impl ProcessRuntime for PALContext  {
         let executable = (flags & GraminePalProtFlags::EXEC.bits()) != 0;
         let writecopy = (flags & GraminePalProtFlags::WRITECOPY.bits()) != 0;
         let mut flags = ProcessPageFlags::PRESENT | ProcessPageFlags::USER_ACCESSIBLE | ProcessPageFlags::ACCESSED;
-        if writable || writecopy {
+        if writable {
             flags |= ProcessPageFlags::WRITABLE;
+        }
+        if writecopy {
+            flags |= ProcessPageFlags::COPY_ON_WRITE;
         }
         if !executable {
             flags |= ProcessPageFlags::NO_EXECUTE;
@@ -371,9 +381,15 @@ impl ProcessRuntime for PALContext  {
 
         for i in 0..num_pages {
             let t = page_table_ref.virt_to_phys(s_vaddr + ((i * PAGE_SIZE_4K) as usize) + (offset as usize));
-            //log::info!("{:#x}, {:#x}, {:#} {:#?}",s_vaddr,offset, s_vaddr + ((i * PAGE_SIZE_4K) as usize) + (offset as usize), t);
+
+            /*
+            page_table_ref.map_4k_page(vaddr + (i * PAGE_SIZE_4K).try_into().unwrap(), t, flags);
+            let t2 = page_table_ref.virt_to_phys(vaddr + ((i * PAGE_SIZE_4K) as usize) );
+            assert!(t == t2, "Address mapping failed");
+            */
+
+            // Non-CoW version (copy page content at this point for writecopy)
             if writecopy {
-                // FIXME: for now we do not support CoW, so copy the page at this point
                 let (_old_mapping, old_page_mapped) = paddr_as_slice!(t);
                 let new_page = allocate_page();
                 let (mapping, new_page_mapped) = paddr_as_slice!(new_page);
@@ -381,31 +397,16 @@ impl ProcessRuntime for PALContext  {
                 for i in 0..512 {
                    new_page_mapped[i] = old_page_mapped[i];
                 }
+                let flags = flags | ProcessPageFlags::WRITABLE;
                 page_table_ref.map_4k_page(vaddr + (i* PAGE_SIZE_4K).try_into().unwrap(), new_page, flags);
-
-                //log::info!("Copy Mapping Virt:{:#x} Phys:{:#x} to Virt:{:#x} Phys:{:#x}",
-                //           s_vaddr + ((i * PAGE_SIZE_4K) as usize) + (offset as usize),
-                //           t,
-                //           vaddr + ((i*PAGE_SIZE_4K) as usize),
-                //           new_page,
-                //);
-
             } else {
                 page_table_ref.map_4k_page(vaddr + (i * PAGE_SIZE_4K).try_into().unwrap(), t, flags);
 
                 let t2 = page_table_ref.virt_to_phys(vaddr + ((i * PAGE_SIZE_4K) as usize) );
-
-                //log::info!("Mapping Virt:{:#x} Phys:{:#x} to Virt:{:#x} Phys:{:#x}",
-                //s_vaddr + ((i * PAGE_SIZE_4K) as usize) + (offset as usize),
-                //           t,
-                //           vaddr + ((i*PAGE_SIZE_4K) as usize),
-                //           t2
-                //);
                 if t != t2 {
                     panic!("Address mapping failed");
                 }
             }
-
         }
 
         self.vmsa.rcx = u64::from_ne_bytes((0i64).to_ne_bytes());
@@ -511,7 +512,36 @@ impl ProcessRuntime for PALContext  {
     }
 
     /// Handle an exception occured in the trustlet
+    // XXX: Currently this function assumes that the exception is a #PF
     fn handle_exception(&mut self) -> bool {
+        // debug
+        let efer = self.vmsa.efer;
+        let rip = self.vmsa.rip;
+        let cr2 = self.vmsa.cr2;
+        let cr4 = self.vmsa.cr4;
+        let rsp = self.vmsa.rsp;
+        let rflags = self.vmsa.rflags;
+        log::info!(" [Trustlet] Page Fault!");
+        log::info!("vmsa EFER: {:?}", efer);
+        log::info!("vmsa CR2: {:?}", cr2);
+        log::info!("vmsa cr4: {:?}", cr4);
+        log::info!("vmsa rip: {:?}", rip);
+        log::info!("vmsa CS: {:?}", self.vmsa.cs);
+        log::info!("vmsa SS: {:?}", self.vmsa.ss);
+        log::info!("vmsa DS: {:?}", self.vmsa.ds);
+        log::info!("vmsa RFLAGS: {:?}", rflags);
+        log::info!("vmsa rsp: {:?}", rsp);
+        let mut process_page_table_ref = ProcessPageTableRef::default();
+        process_page_table_ref.set_external_table(self.vmsa.cr3);
+        // dump stack
+        let stack_base_paddr = process_page_table_ref.get_page(VirtAddr::from(rsp));
+        let offset = (rsp & 0xFFF) / 8;
+        let (_mapping, stack_mapping) = map_paddr!(stack_base_paddr);
+        for i in 0..9 {
+            log::info!(" [Trustlet] Stack (rsp+{}): {:#x}", i*8, unsafe{stack_mapping.as_ptr::<u64>().offset((offset + i).try_into().unwrap()).read()});
+        }
+
+        let rip= self.vmsa.rip;
         let cr2 = self.vmsa.cr2;
         let error_code = self.vmsa.rbx;
         const PF_PRESENT: u64 = 1 << 0;
@@ -519,7 +549,29 @@ impl ProcessRuntime for PALContext  {
         const PF_USER: u64 = 1 << 2;
         const PF_RESERVED: u64 = 1 << 3;
         const PF_INSTRUCTION: u64 = 1 << 4;
-        log::info!(" [Trustlet] Exception: CR2={:#x}, Error code={:?}", cr2, error_code);
+        if (error_code & PF_PRESENT != 0) && (error_code & PF_WRITE != 0) {
+            let mut page_table_ref = ProcessPageTableRef::default();
+            page_table_ref.set_external_table(self.vmsa.cr3);
+            // Handle CoW
+            log::info!(" [Trustlet] CoW: RIP={:#x}, CR2={:#x}, Error code={:?}", rip, cr2, error_code);
+            let user_access = error_code & PF_USER != 0;
+            let handled = page_table_ref.handle_cow(VirtAddr::from(cr2), user_access);
+            if handled {
+                log::info!(" [Trustlet] CoW: handled");
+                return true;
+            }
+        }
+
+        /*
+        // debug: allocate a page for the faulting address
+        let mut page_table_ref = ProcessPageTableRef::default();
+        page_table_ref.set_external_table(self.vmsa.cr3);
+        page_table_ref.add_pages(VirtAddr::from(cr2), 1, ProcessPageFlags::data());
+        return true;
+        */
+
+        // #PF for other reasons
+        log::info!(" [Trustlet] Unhandled #PF: RIP={:#x}, CR2={:#x}, Error code={:?}", rip, cr2, error_code);
         if error_code & PF_PRESENT == 0 {
             log::info!(" [Trustlet] Page fault: not present");
         }
@@ -535,6 +587,115 @@ impl ProcessRuntime for PALContext  {
         if error_code & PF_INSTRUCTION != 0 {
             log::info!(" [Trustlet] Page fault: instruction fetch");
         }
+        false
+    }
+
+    // handle double fault
+    fn handle_df(&mut self) -> bool {
+        log::info!(" [Trustlet] ---------------------------------");
+        log::info!(" [Trustlet] Double Fault!");
+
+        let error_code = self.vmsa.rbx;
+        log::info!(" [Trustlet] Error Code: {:#x}", error_code);
+
+        // Dump stack
+        // Stak layout:
+        // rsp + 0: rcx  (pushed by the hanlder)
+        // rsp + 8: rbx  (pushed by the hanlder)
+        // rsp + 16: rax (pushed by the hanlder)
+        // rsp + 24: error_code
+        // rsp + 32: rip
+        // rsp + 40: cs
+        // rsp + 48: rflags
+        // rsp + 54: rsp
+        // rsp + 64: ss
+        let mut process_page_table_ref = ProcessPageTableRef::default();
+        process_page_table_ref.set_external_table(self.vmsa.cr3);
+        let rsp = self.vmsa.rsp;
+        let stack_base_paddr = process_page_table_ref.get_page(VirtAddr::from(rsp));
+        let offset = (rsp & 0xFFF) / 8;
+        let (_mapping, stack_mapping) = map_paddr!(stack_base_paddr);
+        for i in 0..9 {
+            log::info!(" [Trustlet] Stack (rsp+{}): {:#x}", i*8, unsafe{stack_mapping.as_ptr::<u64>().offset((offset + i).try_into().unwrap()).read()});
+        }
+
+        // Dump GDT
+        // RCX register points to the GDT (limit (2byte) + base (4byte))
+        let gdt_ptr = self.vmsa.rcx;
+        let page = process_page_table_ref.get_page(VirtAddr::from(gdt_ptr));
+        let gdt_offset = (gdt_ptr & 0xFFF) as usize;
+        let (_mapping, gdt_mapping) = map_paddr!(page);
+        let gdt_limit = unsafe{gdt_mapping.as_ptr::<u8>().add(gdt_offset).cast::<u16>().read()};
+        let gdt_base = unsafe{gdt_mapping.as_ptr::<u8>().add(gdt_offset+2).cast::<u64>().read()};
+        log::info!(" [Trustlet] gdt_ptr: {:#x}", gdt_ptr);
+        log::info!(" [Trustlet] GDT: limit={:#x}, base={:#x}", gdt_limit, gdt_base);
+        let gdt_page = process_page_table_ref.get_page(VirtAddr::from(gdt_base));
+        let (_mapping, gdt_mapping) = map_paddr!(gdt_page);
+        let gdt_entries = gdt_limit as usize / 8;
+        let gdt_entry_offset = (gdt_base & 0xFFF) as usize;
+        for i in 0..=gdt_entries {
+            let entry = unsafe{gdt_mapping.as_ptr::<u8>().add(gdt_entry_offset).cast::<u64>().add(i).read()};
+            log::info!(" [Trustlet] GDT[{}]: {:#x}", i, entry);
+        }
+        
+        // Dump CPU state
+        // rax, rbx are pushed to the stack
+        let rax = unsafe{stack_mapping.as_ptr::<u64>().offset((offset + 2).try_into().unwrap()).read()};
+        let rbx = unsafe{stack_mapping.as_ptr::<u64>().offset((offset + 1).try_into().unwrap()).read()};
+        let rcx = unsafe{stack_mapping.as_ptr::<u64>().offset((offset + 0).try_into().unwrap()).read()};
+        let rdx = self.vmsa.rdx;
+        let rsi = self.vmsa.rsi;
+        let rdi = self.vmsa.rdi;
+        let r8 = self.vmsa.r8;
+        let r9 = self.vmsa.r9;
+        let r10 = self.vmsa.r10;
+        let r11 = self.vmsa.r11;
+        let r12 = self.vmsa.r12;
+        let r13 = self.vmsa.r13;
+        let r14 = self.vmsa.r14;
+        let r15 = self.vmsa.r15;
+
+        log::info!(" [Trustlet] rax: {:#x}", rax);
+        log::info!(" [Trustlet] rbx: {:#x}", rbx);
+        log::info!(" [Trustlet] rcx: {:#x}", rcx);
+        log::info!(" [Trustlet] rdx: {:#x}", rdx);
+        log::info!(" [Trustlet] rsi: {:#x}", rsi);
+        log::info!(" [Trustlet] rdi: {:#x}", rdi);
+        log::info!(" [Trustlet] r8: {:#x}", r8);
+        log::info!(" [Trustlet] r9: {:#x}", r9);
+        log::info!(" [Trustlet] r10: {:#x}", r10);
+        log::info!(" [Trustlet] r11: {:#x}", r11);
+        log::info!(" [Trustlet] r12: {:#x}", r12);
+        log::info!(" [Trustlet] r13: {:#x}", r13);
+        log::info!(" [Trustlet] r14: {:#x}", r14);
+        log::info!(" [Trustlet] r15: {:#x}", r15);
+
+        let rip = self.vmsa.rip;
+        let rsp = self.vmsa.rsp;
+
+        log::info!(" [Trustlet] rip: {:#x}", rip);
+        log::info!(" [Trustlet] rsp: {:#x}", rsp);
+
+        let cr2 = self.vmsa.cr2;
+        let cr3 = self.vmsa.cr3;
+        let cr4 = self.vmsa.cr4;
+        let rflags = self.vmsa.rflags;
+        let efer = self.vmsa.efer;
+
+        log::info!(" [Trustlet] cr2: {:#x}", cr2);
+        log::info!(" [Trustlet] cr3: {:#x}", cr3);
+        log::info!(" [Trustlet] cr4: {:#x}", cr4);
+        log::info!(" [Trustlet] efer: {:#x}", efer);
+        log::info!(" [Trustlet] rflags: {:#x}", rflags);
+
+        let cs = self.vmsa.cs;
+        let ss = self.vmsa.ss;
+        let ds = self.vmsa.ds;
+        log::info!(" [Trustlet] cs: {:?}", cs);
+        log::info!(" [Trustlet] ss: {:?}", ss);
+        log::info!(" [Trustlet] ds: {:?}", ds);
+
+        log::info!(" [Trustlet] ---------------------------------");
         false
     }
 }
