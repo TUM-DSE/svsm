@@ -54,6 +54,7 @@ pub struct ProcessMeasurements {
     pub init_measurement: [u8; 64],
     pub manifest_measurement: [u8; 64],
     pub libos_measurement: [u8; 64],
+    pub function_measurement: [u8; 64],
 }
 
 impl Default for ProcessMeasurements {
@@ -62,6 +63,7 @@ impl Default for ProcessMeasurements {
             init_measurement: [0; HASH_SIZE],
             manifest_measurement: [0; HASH_SIZE],
             libos_measurement: [0; HASH_SIZE],
+            function_measurement: [0; HASH_SIZE],
         }
     }
 }
@@ -153,8 +155,8 @@ fn monitor_report(params: &mut RequestParams) -> Result<(), SvsmReqError> {
         store_snp_report(report_bytes, report_size);
 
         // Return the report (if requested)
-        if params.rdx != 0 {
-          copy_back_report(params.rcx, report_bytes, report_size);
+        if params.rcx != 0 {
+            copy_back_report(params.rcx, report_bytes, report_size);
         }
     }
     Ok(())
@@ -168,6 +170,7 @@ fn zygote_report(params: &mut RequestParams) -> Result<(), SvsmReqError>{
     let init_measurement = zygote.measurements.init_measurement;
     let manifest_measurement = zygote.measurements.manifest_measurement;
     let libos_measurement = zygote.measurements.libos_measurement;
+    let function_measurement = zygote.measurements.function_measurement;
 
     // Construct the new report
     let mut new_report: Vec<u8> = Vec::new();
@@ -185,12 +188,15 @@ fn zygote_report(params: &mut RequestParams) -> Result<(), SvsmReqError>{
     new_report.extend_from_slice(&init_measurement);
     new_report.extend_from_slice(&manifest_measurement);
     new_report.extend_from_slice(&libos_measurement);
+    new_report.extend_from_slice(&function_measurement);
 
     // Now new_report holds the existing report data + measurements
     let new_report_size = new_report.len();
 
     // Perform the copy_back_report with the new cumulative report
-    copy_back_report(params.rcx, &new_report, new_report_size);
+    if params.rcx != 0 {
+        copy_back_report(params.rcx, &new_report, new_report_size);
+    }
     return Ok(());
 }
 
@@ -202,6 +208,7 @@ fn trustlet_report(params: &mut RequestParams) -> Result<(), SvsmReqError>{
     let init_measurement = trustlet.measurements.init_measurement;
     let manifest_measurement = trustlet.measurements.manifest_measurement;
     let libos_measurement = trustlet.measurements.libos_measurement;
+    let function_measurement = trustlet.measurements.function_measurement;
 
     // Construct the new report
     let mut new_report: Vec<u8> = Vec::new();
@@ -219,12 +226,16 @@ fn trustlet_report(params: &mut RequestParams) -> Result<(), SvsmReqError>{
     new_report.extend_from_slice(&init_measurement);
     new_report.extend_from_slice(&manifest_measurement);
     new_report.extend_from_slice(&libos_measurement);
+    new_report.extend_from_slice(&function_measurement);
 
     // Now new_report holds the existing report data + measurements
     let new_report_size = new_report.len();
 
     // Perform the copy_back_report with the new cumulative report
-    copy_back_report(params.rcx, &new_report, new_report_size);
+    if params.rcx != 0 {
+        copy_back_report(params.rcx, &new_report, new_report_size);
+    }
+
     return Ok(());
 }
 
@@ -251,6 +262,7 @@ fn function_report(params: &mut RequestParams) -> Result<(), SvsmReqError>{
     let init_measurement = trustlet.measurements.init_measurement;
     let manifest_measurement = trustlet.measurements.manifest_measurement;
     let libos_measurement = trustlet.measurements.libos_measurement;
+    let function_measurement = trustlet.measurements.function_measurement;
 
     // Get and measure the input data of the function
     let (input_data, _) = ProcessPageTableRef::copy_data_from_guest(fn_input_addr, fn_input_size, guest_pgt);
@@ -276,6 +288,7 @@ fn function_report(params: &mut RequestParams) -> Result<(), SvsmReqError>{
     new_report.extend_from_slice(&init_measurement);
     new_report.extend_from_slice(&manifest_measurement);
     new_report.extend_from_slice(&libos_measurement);
+    new_report.extend_from_slice(&function_measurement);
     new_report.extend_from_slice(&input_hash);
     new_report.extend_from_slice(&output_hash);
 
@@ -283,7 +296,10 @@ fn function_report(params: &mut RequestParams) -> Result<(), SvsmReqError>{
     let new_report_size = new_report.len();
 
     // Perform the copy_back_report with the new cumulative report
-    copy_back_report(params.rcx, &new_report, new_report_size);
+    if params.rcx != 0 {
+        copy_back_report(params.rcx, &new_report, new_report_size);
+    }
+
     return Ok(());
 }
 
