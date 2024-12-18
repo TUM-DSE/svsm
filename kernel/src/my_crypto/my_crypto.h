@@ -56,4 +56,5 @@ uint32_t decrypt(
 );
 
 void my_SHA512(uint8_t* buff, const unsigned int buff_len, uint8_t* hash);
+void my_Hacl_Ed25519_sign(uint8_t *msg, uint32_t msg_len, uint8_t *private_key, uint8_t *signature);
 #endif

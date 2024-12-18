@@ -40,6 +40,7 @@ extern "C" {
         ) -> u32;
 
     pub fn my_SHA512(buff: *mut u8, buff_len: u32, hash: *mut u8) -> i32;
+    pub fn my_Hacl_Ed25519_sign(msg: *const u8, msg_len: u32, private_key: *const u8, signature: *mut u8) -> i32;
     pub fn get_cycles() -> u64;
 
 }
