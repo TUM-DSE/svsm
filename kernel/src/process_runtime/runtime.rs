@@ -226,7 +226,7 @@ impl ProcessRuntime for PALContext  {
         page_table_ref.set_external_table(page_table);
 
         let addr = self.vmsa.rbx;
-        let mut size = self.vmsa.rcx;
+        let size = self.vmsa.rcx;
         let flags = self.vmsa.rdx;
 
         // Check if size is a multiple of pages
@@ -241,8 +241,18 @@ impl ProcessRuntime for PALContext  {
             return true;
         }
         let mut page_flags = ProcessPageFlags::data();
-        if flags & 0x2 == 0x2 {
+        if flags & GraminePalProtFlags::WRITE.bits() != 0{
             page_flags = page_flags | ProcessPageFlags::WRITABLE;
+        }
+        /*
+        // XXX: we can omit this for now as currently we support only one thread
+        if flags & GraminePalProtFlags::WRITECOPY.bits() != 0 {
+            page_flags = page_flags | ProcessPageFlags::COPY_ON_WRITE;
+            page_flags = page_flags & !ProcessPageFlags::WRITABLE;
+        }
+        */
+        if flags & GraminePalProtFlags::EXEC.bits() != 0{
+            page_flags = page_flags & !ProcessPageFlags::NO_EXECUTE;
         }
         //log::info!("Trying to allocate: {:#?}, {} {:?}", addr, size,page_flags);
         page_table_ref.add_pages(VirtAddr::from(addr), size / 4096, page_flags);
@@ -356,6 +366,10 @@ impl ProcessRuntime for PALContext  {
         let mut page_table_ref = ProcessPageTableRef::default();
         page_table_ref.set_external_table(page_table);
 
+        assert!(addr % 4096 == 0, "Address is not page aligned");
+        assert!(size % 4096 == 0, "Size is not multiple of page size");
+        assert!(offset % 4096 == 0, "Offset is not page aligned");
+
         if size % 4096 != 0 {
             self.vmsa.rcx = u64::from_ne_bytes((-1i64).to_ne_bytes());
             return false;
@@ -374,18 +388,30 @@ impl ProcessRuntime for PALContext  {
         }
         if writecopy {
             flags |= ProcessPageFlags::COPY_ON_WRITE;
+            flags &= !ProcessPageFlags::WRITABLE;
         }
         if !executable {
             flags |= ProcessPageFlags::NO_EXECUTE;
         }
 
         for i in 0..num_pages {
-            let t = page_table_ref.virt_to_phys(s_vaddr + ((i * PAGE_SIZE_4K) as usize) + (offset as usize));
+            let src = s_vaddr + ((i * PAGE_SIZE_4K) as usize) + (offset as usize);
+            let dst = vaddr + (i * PAGE_SIZE_4K).try_into().unwrap(); 
+            let t = page_table_ref.virt_to_phys(src);
 
             /*
-            page_table_ref.map_4k_page(vaddr + (i * PAGE_SIZE_4K).try_into().unwrap(), t, flags);
-            let t2 = page_table_ref.virt_to_phys(vaddr + ((i * PAGE_SIZE_4K) as usize) );
+            // CoW version
+            // FIXME: this does not work (unknown #PF with non-present page occurs)
+            page_table_ref.map_4k_page(dst, t, flags);
+
+            if writecopy {
+                page_table_ref.change_attr(src, true, false, true, true);
+                // TODO: flush trustleet's TLB
+            }
+            // check
+            let t2 = page_table_ref.virt_to_phys(dst);
             assert!(t == t2, "Address mapping failed");
+            continue;
             */
 
             // Non-CoW version (copy page content at this point for writecopy)
@@ -398,14 +424,12 @@ impl ProcessRuntime for PALContext  {
                    new_page_mapped[i] = old_page_mapped[i];
                 }
                 let flags = flags | ProcessPageFlags::WRITABLE;
-                page_table_ref.map_4k_page(vaddr + (i* PAGE_SIZE_4K).try_into().unwrap(), new_page, flags);
+                page_table_ref.map_4k_page(dst, new_page, flags);
             } else {
-                page_table_ref.map_4k_page(vaddr + (i * PAGE_SIZE_4K).try_into().unwrap(), t, flags);
+                page_table_ref.map_4k_page(dst, t, flags);
 
-                let t2 = page_table_ref.virt_to_phys(vaddr + ((i * PAGE_SIZE_4K) as usize) );
-                if t != t2 {
-                    panic!("Address mapping failed");
-                }
+                let t2 = page_table_ref.virt_to_phys(dst);
+                assert!(t == t2, "Address mapping failed");
             }
         }
 
