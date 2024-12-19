@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use crate::vaddr_as_u64_slice;
 
 use crate::my_crypto_wrapper::my_SHA512;
+use crate::my_crypto_wrapper::my_Hacl_Ed25519_sign;
 use crate::my_crypto_wrapper::get_keys;
 use crate::my_crypto_wrapper::decrypt;
 use crate::my_crypto_wrapper::key_pair;
@@ -40,6 +41,7 @@ fn get_snp_report() -> Option<(&'static [u8], usize)> {
   }
 }
 
+const SIGNATURE_SIZE: usize = 64;
 const HASH_SIZE: usize = 64;
 const KEY_SIZE: usize = 32;
 const NONCE_SIZE: usize = 24;
@@ -89,6 +91,29 @@ pub fn measure(start_address: u64, size: u64) -> [u8; HASH_SIZE] {
 
     // Return the final hash measurement
     hash
+}
+
+fn sign_report(report: &[u8]) -> [u8; SIGNATURE_SIZE] {
+    let report_addr = report.as_ptr() as u64; // Convert the pointer to u64
+    let report_size = report.len() as u64;   // Get the size of the report
+
+    // Use a dummy private key for development
+    // TODO: Use the function provider private key used for communication with the client
+    let dummy_private_key: [u8; KEY_SIZE] = [0x69; KEY_SIZE];
+
+    // Sign the report
+    let mut signature: [u8; SIGNATURE_SIZE] = [0; SIGNATURE_SIZE];
+    unsafe {
+        my_Hacl_Ed25519_sign(
+            report_addr as *const u8,
+            report_size.try_into().unwrap(),
+            dummy_private_key.as_ptr(),
+            signature.as_mut_ptr(),
+        );
+    }
+
+    // Return the signature
+    signature
 }
 
 fn copy_back_report(report_buffer: u64, report_data: &[u8], report_size: usize) {
@@ -295,9 +320,13 @@ fn function_report(params: &mut RequestParams) -> Result<(), SvsmReqError>{
     // Now new_report holds the existing report data + measurements
     let new_report_size = new_report.len();
 
+    // Sign the new report with a dummy private key
+    let signature = sign_report(&new_report);
+    new_report.extend_from_slice(&signature);
+
     // Perform the copy_back_report with the new cumulative report
     if params.rcx != 0 {
-        copy_back_report(params.rcx, &new_report, new_report_size);
+        copy_back_report(params.rcx, &new_report, new_report_size + signature.len());
     }
 
     return Ok(());
