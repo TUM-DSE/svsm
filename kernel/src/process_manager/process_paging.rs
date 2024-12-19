@@ -402,7 +402,7 @@ impl ProcessPageTableRef {
         strip_paddr!(table_entry.0)
     }
 
-    fn page_walk(&self, table: &ProcessPageTablePage,
+    pub fn page_walk(&self, table: &ProcessPageTablePage,
                  paddr: PhysAddr, addr: VirtAddr)
                  -> ProcessTableLevelMapping {
         let mut index = ProcessPageTable::index::<PGD>(addr);

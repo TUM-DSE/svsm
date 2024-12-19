@@ -26,20 +26,25 @@ impl MemoryChannel {
         self.output = self.allocate_range(page_table_ref, size, OUTPUT_VADDR);
     }
 
-    pub fn inflate_input(&mut self, page_table_ref: &mut ProcessPageTableRef, size: usize) {
+    pub fn inflate_input(&mut self, page_table: u64, size: usize) {
+        let mut page_table_ref = ProcessPageTableRef::default();
+        page_table_ref.set_external_table(page_table);
         let page_count = (size + PAGE_SIZE - (size % PAGE_SIZE)) / PAGE_SIZE;
-        self.input.inflate(page_table_ref, page_count as u64, INPUT_VADDR);
+        self.input.inflate(&mut page_table_ref, page_count as u64, INPUT_VADDR);
     }
 
-    pub fn inflate_output(&mut self, page_table_ref: &mut ProcessPageTableRef, size: usize) {
+    pub fn inflate_output(&mut self, page_table: u64, size: usize) {
+        let mut page_table_ref = &mut ProcessPageTableRef::default();
+        page_table_ref.set_external_table(page_table);
         let page_count = (size + PAGE_SIZE - (size % PAGE_SIZE)) / PAGE_SIZE;
-        self.output.inflate(page_table_ref, page_count as u64, OUTPUT_VADDR);
+        self.output.inflate(&mut page_table_ref, page_count as u64, OUTPUT_VADDR);
     }
 
     pub fn copy_into(&mut self, source_addr: u64, page_table: u64, size: usize) {
         let target = VirtAddr::from(ALLOCATION_RANGE_VIRT_START);
         self.input.mount();
         ProcessPageTableRef::copy_data_from_guest_to(source_addr, size as u64, page_table, ALLOCATION_RANGE_VIRT_START);
+        self.input.unmount();
     }
 
     pub fn copy_out(&mut self, target_addr: u64, page_table: u64, size: usize) {
@@ -47,6 +52,7 @@ impl MemoryChannel {
         let source = VirtAddr::from(ALLOCATION_RANGE_VIRT_START);
         self.output.mount();
         ProcessPageTableRef::copy_data_to_guest(target_addr, copy_size as u64, page_table);
+        self.output.unmount();
     }
 
 
