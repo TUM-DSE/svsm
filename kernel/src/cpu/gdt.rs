@@ -35,11 +35,11 @@ impl GDTEntry {
     }
 
     pub const fn code_64_kernel() -> Self {
-        Self(0x00af9a000000ffffu64)
+        Self(0x00af9b000000ffffu64)
     }
 
     pub const fn data_64_kernel() -> Self {
-        Self(0x00cf92000000ffffu64)
+        Self(0x00cf93000000ffffu64)
     }
 
     pub const fn code_64_user() -> Self {
@@ -47,13 +47,14 @@ impl GDTEntry {
     }
 
     pub const fn data_64_user() -> Self {
-        Self(0x00cff2000000ffffu64)
+        Self(0x00cff3000000ffffu64)
     }
 }
 
 const GDT_SIZE: u16 = 8;
 
 #[derive(Copy, Clone, Debug)]
+#[repr(align(4096))]
 pub struct GDT {
     entries: [GDTEntry; GDT_SIZE as usize],
 }
@@ -115,7 +116,7 @@ impl GDT {
         }
     }
 
-    unsafe fn set_tss_entry(&mut self, desc0: GDTEntry, desc1: GDTEntry) {
+    pub unsafe fn set_tss_entry(&mut self, desc0: GDTEntry, desc1: GDTEntry) {
         let idx = (SVSM_TSS / 8) as usize;
 
         let tss_entries = &self.entries[idx..idx + 1].as_mut_ptr();

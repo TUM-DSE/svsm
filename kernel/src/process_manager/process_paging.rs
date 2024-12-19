@@ -17,6 +17,7 @@ use super::memory_helper::{ZERO_PAGE};
 
 // TP: Trusted Process
 pub const TP_STACK_START_VADDR: u64 = 0x80_0000_0000;
+pub const TP_KERN_STACK_START_VADDR: u64 = 0x90_0000_0000;
 pub const TP_MANIFEST_START_VADDR: u64 = 0x100_0000_0000;
 pub const TP_LIBOS_START_VADDR: u64 = 0x180_0000_0000;
 
@@ -49,6 +50,7 @@ bitflags! {
         const DIRTY =           1 << 6;
         const HUGE_PAGE =       1 << 7;
         const GLOBAL =          1 << 8;
+        const COPY_ON_WRITE =   1 << 9; // Use this field to mark CoW pages
 
         const NO_EXECUTE =      1 << 63;
     }
@@ -652,5 +654,61 @@ impl ProcessPageTableRef {
         assert!(self.process_page_table != PhysAddr::null());
         assert!(other.process_page_table != PhysAddr::null());
         self._copy_page_table(other.process_page_table, self.process_page_table, 4);
+    }
+
+    pub fn handle_cow(&mut self, addr: VirtAddr, user_access: bool) -> bool {
+        // Handle CoW for the page at the given address
+        // log::info!("[handle_cow] addr: {:#x}, user_access: {}", addr, user_access);
+        let (_pgd_mapping, pgd_table) = paddr_as_table!(self.process_page_table);
+        let current_mapping = self.page_walk(&pgd_table, self.process_page_table, addr);
+
+        // log::info!("[handle_cow] current_mapping: {:?}", current_mapping);
+
+        match current_mapping {
+            ProcessTableLevelMapping::PTE(table_phys, index) => {
+                let (_mapping, table) = paddr_as_table!(table_phys);
+                let entry = table[index];
+                let entry_phys = PhysAddr::from(entry.0.bits() & 0xFFFF_FFFF_F000);
+                let entry_flags = entry.flags();
+
+                if entry_flags.contains(ProcessPageFlags::WRITABLE) {
+                    // the page is already writable, no need to handle CoW
+                    log::warn!("[handle_cow] the page already writable, skip");
+                    return false;
+                }
+                if user_access && !entry_flags.contains(ProcessPageFlags::USER_ACCESSIBLE) {
+                    // the page is not user-accessible, skip
+                    log::warn!("[handle_cow] the page not user-accessible, skip");
+                    return false;
+                }
+                if !entry_flags.contains(ProcessPageFlags::COPY_ON_WRITE) {
+                    // the page is not-marked as CoW, skip
+                    log::warn!("[handle_cow] the page not marked as CoW, skip");
+                    return false;
+                }
+
+                let new_page = allocate_page();
+                let (_new_mapping, new_data) = paddr_as_slice!(new_page, u64);
+                let (_old_mapping, old_data) = paddr_as_slice!(entry_phys, u64);
+                rmp_adjust(_new_mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
+
+                for i in 0..512 {
+                    new_data[i] = old_data[i];
+                }
+
+                // Set writable flag and clear CoW flag
+                let flag = entry_flags.bits() | ProcessPageFlags::WRITABLE.bits() & !ProcessPageFlags::COPY_ON_WRITE.bits();
+                table[index].set(new_page, ProcessPageFlags::from_bits_truncate(flag));
+
+                // log::info!("[handle_cow] CoW done, new_page: {:#x}", new_page);
+
+                return true;
+            },
+            _ => {
+                // page non-present, skip
+                log::warn!("[handle_cow] page non-present, skip");
+                return false;
+            }
+        }
     }
 }

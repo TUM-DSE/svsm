@@ -22,6 +22,6 @@ pub fn monitor_init(){
     }
     set_ecryption_mask_address_size();
     let _ = additional_monitor_memory_init();
-    PROCESS_STORE.init(10);
+    PROCESS_STORE.init(128);
     let _ = MONITOR_INIT_STATE.reinit(&MONITOR_INIT_STATE_TRUE);
 }
