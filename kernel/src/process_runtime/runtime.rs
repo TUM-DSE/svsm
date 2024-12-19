@@ -2,10 +2,12 @@ use cpuarch::vmsa::VMSA;
 use igvm_defs::PAGE_SIZE_4K;
 use core::ffi::CStr;
 use core::str;
-use crate::process_manager::process_paging::TP_LIBOS_START_VADDR;
+use crate::address::PhysAddr;
+use crate::process_manager::process_paging::{ProcessTableLevelMapping, TP_LIBOS_START_VADDR};
 use crate::{address::VirtAddr, cpu::{cpuid::{cpuid_table_raw, CpuidResult}, percpu::{this_cpu, this_cpu_unsafe}}, map_paddr, mm::{PerCPUPageMappingGuard, PAGE_SIZE}, paddr_as_slice, process_manager::{process::{ProcessID, TrustedProcess, PROCESS_STORE}, process_memory::allocate_page, process_paging::{GraminePalProtFlags, ProcessPageFlags, ProcessPageTableRef}}, protocols::{errors::SvsmReqError, RequestParams}, vaddr_as_u64_slice};
+use crate::process_manager::process_paging::ProcessPageTablePage;
 
-use crate::vaddr_as_slice; 
+use crate::{paddr_as_table, vaddr_as_slice};
 use crate::types::PageSize;
 use crate::sev::RMPFlags;
 use crate::sev::rmp_adjust;
@@ -69,6 +71,9 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let mut string_buf: [u8;256] = [0;256];
     let mut string_pos: usize = 0;
     let sev_features = trustlet.context.sev_features;
+
+    trustlet.context.channel.inflate_input(vmsa.cr3, function_arg_size as usize);
+    trustlet.context.channel.inflate_output(vmsa.cr3, result_size as usize);
 
     trustlet.context.channel.copy_into(function_arg, guest_page_table, function_arg_size as usize);
 
@@ -329,6 +334,8 @@ impl ProcessRuntime for PALContext  {
             self.string_pos += 1;
         } else {
             log::info!("Trustlet Debug Message to long");
+            let debug_string = str::from_utf8(&self.string_buf).unwrap();
+            log::info!(" [Trustlet](partial) {}", debug_string);
             self.string_pos = 0;
             self.string_buf = [0;256];
         }

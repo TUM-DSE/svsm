@@ -72,10 +72,10 @@ impl AllocationRange {
             return;
         }
         let table_flags = ProcessPageFlags::PRESENT | ProcessPageFlags::WRITABLE |
-        ProcessPageFlags::DIRTY | ProcessPageFlags::ACCESSED;
+        ProcessPageFlags::DIRTY | ProcessPageFlags::ACCESSED | ProcessPageFlags::USER_ACCESSIBLE;
         let start_address = VirtAddr::from(start_addr);
-        let begin = self.1;
-        for i in 0..(pages as usize) {
+        let begin = self.1 as usize;
+        for i in begin..(pages as usize) {
             let current_page = allocate_page();
             page_table_ref.map_4k_page(start_address + i * PAGE_SIZE, current_page, table_flags);
         }
@@ -86,6 +86,13 @@ impl AllocationRange {
         let (_mapping, pgd) = paddr_as_slice!(read_cr3());
         pgd[DEFAULT_ALLOCATION_RANGE_MOUNT] = self.0;
         flush_tlb_global();
+    }
+
+    pub fn unmount(&self) {
+        let (_mapping, pgd) = paddr_as_slice!(read_cr3());
+        pgd[DEFAULT_ALLOCATION_RANGE_MOUNT] = 0;
+        flush_tlb_global();
+
     }
 
     pub fn mount_at(&self, loc: usize) -> u64 {
