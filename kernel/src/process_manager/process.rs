@@ -159,14 +159,17 @@ impl TrustedProcess {
         let (pal_data, pal_range) = ProcessPageTableRef::copy_data_from_guest(pal, pal_size, pgt);
         base.init_with_data(pal_data, pal_size, pal_range);
         measurements.init_measurement = measure(pal_data.into(), pal_size);
+        log::debug!("TODO: Compare with pal measurement of the policy");
 
         let (manifest_data, manifest_range) = ProcessPageTableRef::copy_data_from_guest(manifest, manifest_size, pgt);
         base.add_manifest(manifest_data, manifest_size, manifest_range);
         measurements.manifest_measurement = measure(manifest_data.into(), manifest_size);
+        log::debug!("TODO: Compare with manifest measurement of the policy");
 
-        let(libos_data, libos_range) = ProcessPageTableRef::copy_data_from_guest(libos, libos_size, pgt);
+        let (libos_data, libos_range) = ProcessPageTableRef::copy_data_from_guest(libos, libos_size, pgt);
         base.add_libos(libos_data, libos_size, libos_range);
         measurements.libos_measurement = measure(libos_data.into(), libos_size);
+        log::debug!("TODO: Compare with libos measurement of the policy");
 
         // TODO: Free zygote data
         Self {
@@ -199,9 +202,15 @@ impl TrustedProcess {
 
     pub fn trustlet(parent: ProcessID, data: u64, size: u64, pgt: u64) -> Self{
         // Inherit the data from the Zygote
-        let trustlet = TrustedProcess::dublicate(parent);
+        let mut trustlet = TrustedProcess::dublicate(parent);
         if data != 0 {
             let (function_code, function_code_range) = ProcessPageTableRef::copy_data_from_guest(data, size, pgt);
+
+            log::debug!("Measuring trustlet function");
+            trustlet.measurements.function_measurement = measure(function_code.into(), size);
+            log::debug!("TODO: Compare with function measurement of the policy");
+
+            log::debug!("Adding trustlet function");
             let size = (4096 - (size & 0xFFF)) + size;
             trustlet.context.page_table_ref.add_function(function_code, size);
             function_code_range.delete();
