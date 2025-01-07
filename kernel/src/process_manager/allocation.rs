@@ -77,6 +77,8 @@ impl AllocationRange {
         let begin = self.1 as usize;
         for i in begin..(pages as usize) {
             let current_page = allocate_page();
+            let (mapping, _page_mapped) = paddr_as_slice!(current_page);
+            rmp_adjust(mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular);
             page_table_ref.map_4k_page(start_address + i * PAGE_SIZE, current_page, table_flags);
         }
         self.1 = pages;
