@@ -40,6 +40,7 @@ pub trait ProcessRuntime {
 enum TrustletInvocationType {
     NORMAL=0,
     FILEATTR=1,
+    OPEN=2,
 }
 
 /// Return value to the guest from invokeTrustlet
@@ -50,6 +51,7 @@ enum TrustletReturnType {
     GETRESULT=1,
     ERROR=2,
     FILEATTR=3,
+    OPEN=4,
 }
 
 /// Guest request type from the trustlet (PAL)
@@ -57,6 +59,7 @@ enum TrustletReturnType {
 #[repr(u64)]
 enum PalSvsmGuestRequestType {
     FILEATTR=0,
+    OPEN=1,
 }
 
 #[derive(Debug)]
@@ -126,8 +129,8 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
             trustlet.context.channel.inflate_output(vmsa.cr3, result_size as usize);
             trustlet.context.channel.copy_into(function_arg, guest_page_table, function_arg_size as usize);
         }
-        TrustletInvocationType::FILEATTR => {
-            // log::info!("Invoking Trustlet: Fileattr");
+        TrustletInvocationType::FILEATTR | TrustletInvocationType::OPEN => {
+            // log::info!("Invoking Trustlet: gueset request: {:?}", invocation_type);
             let mut guest_page_table_ref = ProcessPageTableRef::default();
             guest_page_table_ref.set_external_table(guest_page_table);
             let arg_page = guest_page_table_ref.get_page(VirtAddr::from(invocation_arg_guest_vaddr));
@@ -656,7 +659,8 @@ impl ProcessRuntime for PALContext  {
     /// * rdx: data size
     /// 
     /// Retrun:
-    /// * rcx: 0 on success, -1 on failure
+    /// This function does not return to the trustle but return to the guest.
+    /// The guest will call another invokeTruslet() after completing the request.
     fn pal_svsm_guest_request(&mut self) -> bool {
         let request_type: PalSvsmGuestRequestType = self.vmsa.rbx.try_into().unwrap();
         let data_ptr = self.vmsa.rcx;
@@ -696,6 +700,40 @@ impl ProcessRuntime for PALContext  {
 
                 // Return to the guest to make a request
                 self.return_value = TrustletReturnType::FILEATTR as u64;
+                return false
+            }
+            PalSvsmGuestRequestType::OPEN => {
+                log::info!(" [Trustlet] Guest Request: OPEN");
+                let page_table = self.vmsa.cr3;
+                let mut page_table_ref = ProcessPageTableRef::default();
+                page_table_ref.set_external_table(page_table);
+
+                // Map user provided arguments
+                // FIXME: for now we assume that the data is within a single page
+                let data_page = page_table_ref.get_page(VirtAddr::from(data_ptr));
+                let offset = (data_ptr & 0xFFF) as usize;
+                let (_mapping, data_mapping) = map_paddr!(data_page);
+                assert!(offset + data_size <= PAGE_SIZE_4K as usize, "Data size exceeds page size");
+                let data = unsafe { core::slice::from_raw_parts(data_mapping.as_ptr::<u8>().wrapping_add(offset), data_size) };
+
+                //log::info!(" [Trustlet] Guest Request: FILEATTR: size={}, data={:?}", data_size, data);
+                // struct fileattr {
+                //     char path[256];
+                //     uint32_t fd;
+                // };
+
+                // copy the path into the guest arg struct
+                let mut guest_page_table_ref = ProcessPageTableRef::default();
+                guest_page_table_ref.set_external_table(self.guest_page_table);
+                let arg_page = guest_page_table_ref.get_page(VirtAddr::from(self.invocation_arg_guest_vaddr));
+                let (_mapping, arg_mapping) = map_paddr!(arg_page);
+                let arg = unsafe { core::slice::from_raw_parts_mut(arg_mapping.as_mut_ptr::<u8>(), 256) };
+                for i in 0..256 {
+                    arg[i] = data[i];
+                }
+
+                // Return to the guest to make a request
+                self.return_value = TrustletReturnType::OPEN as u64;
                 return false
             }
         }
