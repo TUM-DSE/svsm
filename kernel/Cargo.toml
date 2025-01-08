@@ -44,10 +44,11 @@ libmstpm = { workspace = true, optional = true }
 test.workspace = true
 
 [features]
-default = ["mstpm"]
+default = []
 default-test = []
 enable-gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 mstpm = ["dep:libmstpm"]
+boottime = []
 
 [dev-dependencies]
 
