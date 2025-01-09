@@ -63,7 +63,7 @@ pub const PUD: usize = 2;
 pub const PMD: usize = 1;
 pub const PTE: usize = 0;
 
-fn addr_to_idx(addr: usize, lvl: usize) -> usize {
+pub fn addr_to_idx(addr: usize, lvl: usize) -> usize {
     (addr >> (lvl * 9 + 12)) & 0x1FF
 }
 

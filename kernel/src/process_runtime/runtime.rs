@@ -17,6 +17,9 @@ use crate::{paddr_as_table, vaddr_as_slice};
 use crate::types::PageSize;
 use crate::sev::RMPFlags;
 use crate::sev::rmp_adjust;
+use crate::mm::phys_to_virt;
+use crate::process_manager::process_memory::{PGD, addr_to_idx}; 
+use crate::process_manager::memory_channels::{INPUT_VADDR, OUTPUT_VADDR};
 use core::arch::asm;
 
 const TRUSTLET_VMPL: u64 = 1;
@@ -277,6 +280,50 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
         }
     }
     params.rcx = rc.return_value;
+
+    Ok(())
+}
+
+pub fn create_channel(params: &mut RequestParams) -> Result<(), SvsmReqError> {
+    let tid1 = params.rcx;
+    let tid2 = params.rdx;
+
+    log::info!("Creating Channel: tid={} tid={}", tid1, tid2);
+
+    // map tid1's output channel to tid2's input channel
+
+    let trustlet1 = PROCESS_STORE.get(ProcessID(tid1.try_into().unwrap()));
+    let trustlet2 = PROCESS_STORE.get(ProcessID(tid2.try_into().unwrap()));
+
+    let trustlet1_vmsa_paddr = trustlet1.context.vmsa;
+    let trustlet1_vmsa_mapping = PerCPUPageMappingGuard::create_4k(trustlet1_vmsa_paddr).unwrap();
+    let trustlet1_vmsa: &mut VMSA = unsafe { trustlet1_vmsa_mapping.virt_addr().as_mut_ptr::<VMSA>().as_mut().unwrap() };
+    let trustlet1_cr3 = trustlet1_vmsa.cr3;
+    let trustlet1_cr3_mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(trustlet1_cr3)).unwrap();
+    let trustlet1_pgd_table = vaddr_as_u64_slice!(trustlet1_cr3_mapping.virt_addr());
+    let trustlet1_output_channel_pgd_idx = addr_to_idx(OUTPUT_VADDR as usize, PGD);
+
+    let trustlet2_vmsa_paddr = trustlet2.context.vmsa;
+    let trustlet2_vmsa_mapping = PerCPUPageMappingGuard::create_4k(trustlet2_vmsa_paddr).unwrap();
+    let trustlet2_vmsa: &mut VMSA = unsafe { trustlet2_vmsa_mapping.virt_addr().as_mut_ptr::<VMSA>().as_mut().unwrap() };
+    let trustlet2_cr3 = trustlet2_vmsa.cr3;
+    let trustlet2_cr3_mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(trustlet2_cr3)).unwrap();
+    let trustlet2_pgd_table = vaddr_as_u64_slice!(trustlet2_cr3_mapping.virt_addr());
+    let trustlet2_input_channel_pgd_idx = addr_to_idx(INPUT_VADDR as usize, PGD);
+
+    log::info!("trustlet1_output_channel_pgd_idx: 0x{:x}", trustlet1_output_channel_pgd_idx);
+    log::info!("trustlet2_input_channel_pgd_idx: 0x{:x}", trustlet2_input_channel_pgd_idx);
+
+    // Update trustlet2's pgd entry
+    //  Trustlet1 CR3 -> PGD [OUTPUT_VADDR] -> <PUD A> -> ...
+    //  Trustlet2 CR3 -> PGD [INPUT_VADDR]  -> <PUD B> -> ...
+    // change trustlet2's PGD entry of INPUT_VADDR to point to trustlet1's output channel
+    //  Trustlet2 CR3 -> PGD [INPUT_VADDR]  -> <PUD A> -> ...
+    let target_addr = trustlet1_pgd_table[trustlet1_output_channel_pgd_idx] & !0xFFF;
+    let pgd_entry = trustlet2_pgd_table[trustlet2_input_channel_pgd_idx];
+    trustlet2_pgd_table[trustlet2_input_channel_pgd_idx] = target_addr | (pgd_entry & 0xFFF);
+
+    // TODO: free trustlet2's old input channel pages
 
     Ok(())
 }
