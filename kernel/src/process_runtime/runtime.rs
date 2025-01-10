@@ -319,9 +319,8 @@ pub fn create_channel(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     //  Trustlet2 CR3 -> PGD [INPUT_VADDR]  -> <PUD B> -> ...
     // change trustlet2's PGD entry of INPUT_VADDR to point to trustlet1's output channel
     //  Trustlet2 CR3 -> PGD [INPUT_VADDR]  -> <PUD A> -> ...
-    let target_addr = trustlet1_pgd_table[trustlet1_output_channel_pgd_idx] & !0xFFF;
-    let pgd_entry = trustlet2_pgd_table[trustlet2_input_channel_pgd_idx];
-    trustlet2_pgd_table[trustlet2_input_channel_pgd_idx] = target_addr | (pgd_entry & 0xFFF);
+    let target_entry = trustlet1_pgd_table[trustlet1_output_channel_pgd_idx];
+    trustlet2_pgd_table[trustlet2_input_channel_pgd_idx] = target_entry;
 
     // TODO: free trustlet2's old input channel pages
 
