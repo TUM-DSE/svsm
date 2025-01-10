@@ -19,6 +19,19 @@ use crate::process_manager::process::ProcessID;
 use crate::process_manager::process_paging::ProcessPageTableRef;
 use crate::mm::PAGE_SIZE;
 
+/* crates for attestation microbenchmarks */
+use crate::process_manager::process_paging::{TP_MANIFEST_START_VADDR, TP_LIBOS_START_VADDR, TP_FUNCTION_START_VADDR};
+use crate::address::VirtAddr;
+use cpuarch::vmsa::VMSA;
+use crate::map_paddr;
+use crate::process_manager::process_memory::{allocate_page, ALLOCATION_RANGE_VIRT_START};
+use crate::cpu::control_regs::{read_cr3};
+use crate::address::Address;
+use crate::mm::phys_to_virt;
+use crate::process_manager::process_memory::{PGD, addr_to_idx};
+use crate::cpu::flush_tlb_global;
+/* end of crates for attestation microbenchmarks */
+
 struct StoredSNPReport {
   data: Vec<u8>, // Dynamically sized to hold only the actual report
   size: usize,
@@ -50,6 +63,13 @@ pub const MONITOR_ATTESTATION: u64 = 0;
 const ZYGOTE_ATTESTATION: u64 = 1;
 const TRUSTLET_ATTESTATION: u64 = 2;
 const FUNCTION_ATTESTATION: u64 = 3;
+/* helper attestation options for microbenchmarks */
+pub const MONITOR_ATTESTATION_COLD: u64 = 4;
+const PREPARE_ZYGOTE_ATTESTATION_COLD: u64 = 5;
+const ZYGOTE_ATTESTATION_COLD: u64 = 6;
+const PREPARE_TRUSTLET_ATTESTATION_COLD: u64 = 7;
+const TRUSTLET_ATTESTATION_COLD: u64 = 8;
+/* end of helper attestation options for microbenchmarks */
 
 #[derive(Debug, Copy, Clone)]
 pub struct ProcessMeasurements {
@@ -88,7 +108,7 @@ pub fn measure(start_address: u64, size: u64) -> [u8; HASH_SIZE] {
             hash.as_mut_ptr(),
         );
     }
-
+    log::debug!("[Measure] resulting hash {:?}", hash);
     // Return the final hash measurement
     hash
 }
@@ -336,21 +356,43 @@ fn function_report(params: &mut RequestParams) -> Result<(), SvsmReqError>{
 pub fn diff_attestation(params: &mut RequestParams) -> Result<(), SvsmReqError>{
     match params.rdx {
         MONITOR_ATTESTATION => {
-            log::info!("[Performing monitor attestation]");
+            log::debug!("[Performing monitor attestation]");
             let _ = monitor_report(params);
         }
         ZYGOTE_ATTESTATION => {
-            log::info!("[Performing zygote {} attestation]", params.r8);
+            log::debug!("[Performing zygote {} attestation]", params.r8);
             let _ = zygote_report(params);
         }
         TRUSTLET_ATTESTATION => {
-            log::info!("[Performing trustlet {} attestation]", params.r8);
+            log::debug!("[Performing trustlet {} attestation]", params.r8);
             let _ = trustlet_report(params);
         }
         FUNCTION_ATTESTATION => {
-            log::info!("[Performing function attestation]");
+            log::debug!("[Performing function attestation]");
             let _ = function_report(params);
         }
+        /* helper attestation options for microbenchmarks */
+        MONITOR_ATTESTATION_COLD => {
+            log::debug!("[Performing monitor cold report generation]");
+            let _ = monitor_report_cold(params);
+        }
+        PREPARE_ZYGOTE_ATTESTATION_COLD => {
+            log::debug!("[Preparing zygote {} cold report generation]", params.r8);
+            let _ = prepare_zygote_report_cold(params);
+        }
+        ZYGOTE_ATTESTATION_COLD => {
+            log::debug!("[Performing zygote {} cold report generation]", params.r8);
+            let _ = zygote_report_cold(params);
+        }
+        PREPARE_TRUSTLET_ATTESTATION_COLD => {
+            log::debug!("[Preparing trustlet {} cold report generation]", params.r8);
+            let _ = prepare_trustlet_report_cold(params);
+        }
+        TRUSTLET_ATTESTATION_COLD => {
+            log::debug!("[Performing trustlet {} cold report generation]", params.r8);
+            let _ = trustlet_report_cold(params);
+        }
+        /* end of helper attestation options for microbenchmarks */
         _ => {
             log::info!("[Unknown attestation request type]");
         }
@@ -437,3 +479,209 @@ pub fn send_policy(params: &mut RequestParams) -> Result<(), SvsmReqError> {
                                 sender_pub_key.as_mut_ptr(), (*get_keys()).private_key.as_mut_ptr())};
     Ok(())
 }
+
+/* helper report generation options for attestation microbenchmarks */
+#[allow(non_snake_case)]
+fn monitor_report_cold(params: &mut RequestParams) -> Result<(), SvsmReqError> {
+
+    // The report does not exist so, retrieve and store the Original SNP report
+    log::debug!("Monitor retrieves the SNP report");
+    let mut rep: [u8; REPORT_RESPONSE_SIZE] = [0; REPORT_RESPONSE_SIZE];
+
+    /* Get a regular report of type struct SnpReportResponse */
+    let _rep_struct_size = match get_regular_report(&mut rep) {
+        Ok(e) => e,
+        Err(e) => {
+            log::info!("Error from get report: {:?}", e);
+            panic!();
+        }
+    };
+
+    // Cast the raw bytes into an SnpReportResponse
+    let snp_response: &SnpReportResponse = unsafe {
+      &*(rep.as_ptr() as *const SnpReportResponse)
+    };
+
+    // Check the response for validation
+    match snp_response.validate() {
+      Ok(e) => e,
+      Err(e) => {
+          log::info!("Invalid SNP report: {:?}", e);
+          panic!();
+      }
+    };
+
+    let report_size = snp_response.get_report_size() as usize;
+    let report = snp_response.get_report();
+    log::debug!("actual report size { }", snp_response.get_report_size());
+
+    let report_bytes = unsafe {
+      core::slice::from_raw_parts(
+          (report as *const AttestationReport) as *const u8,
+          report_size,
+      )
+    };
+
+    // Return the report (if requested)
+    if params.rcx != 0 {
+        copy_back_report(params.rcx, report_bytes, report_size);
+    }
+    Ok(())
+}
+
+#[allow(non_snake_case)]
+fn prepare_zygote_report_cold(params: &mut RequestParams) -> Result<(), SvsmReqError>{
+    let zygote_id = ProcessID(params.r8 as usize);
+    let zygote = PROCESS_STORE.get(zygote_id);
+
+    // we need to mount the allocation range for the init to have a valid translation
+    // for the ALLOCATION_RANGE_VIRT_START address
+    zygote.base.alloc_range.mount();
+    let init_ptr = ALLOCATION_RANGE_VIRT_START; //zygote.base.alloc_range.0;
+    let manifest_ptr = TP_MANIFEST_START_VADDR; //zygote.base.alloc_range_manifest.0;
+    let libos_ptr = TP_LIBOS_START_VADDR; //zygote.base.alloc_range_libos.0;
+
+    // Getting the monitor page table ref
+    let monitor_cr3 = read_cr3().bits() as u64;
+    let monitor_cr3_mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(monitor_cr3)).unwrap();
+    let monitor_pgd_table = vaddr_as_u64_slice!(monitor_cr3_mapping.virt_addr());
+
+    // Getting the zygote page table ref
+    let zygote_cr3 = zygote.base.page_table_ref.process_page_table;
+    let zygote_cr3_mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(zygote_cr3)).unwrap();
+    let zygote_pgd_table = vaddr_as_u64_slice!(zygote_cr3_mapping.virt_addr());
+
+    // Get the page table indices for each entry
+    // let monitor_init_pgd_idx = addr_to_idx(init_ptr as usize, PGD);
+    // let zygote_init_pgd_idx = addr_to_idx(init_ptr as usize, PGD);
+    let monitor_manifest_pgd_idx = addr_to_idx(manifest_ptr as usize, PGD);
+    let zygote_manifest_pgd_idx = addr_to_idx(manifest_ptr as usize, PGD);
+    let monitor_libos_pgd_idx = addr_to_idx(libos_ptr as usize, PGD);
+    let zygote_libos_pgd_idx = addr_to_idx(libos_ptr as usize, PGD);
+
+    // Update monitors's pgd entry
+    // Note that for the init, the monitor's pgd entry is updated through the mount
+    // monitor_pgd_table[monitor_init_pgd_idx] = zygote_pgd_table[zygote_init_pgd_idx];
+    monitor_pgd_table[monitor_manifest_pgd_idx] = zygote_pgd_table[zygote_manifest_pgd_idx];
+    monitor_pgd_table[monitor_libos_pgd_idx] = zygote_pgd_table[zygote_libos_pgd_idx];
+
+    // Flush tlb
+    flush_tlb_global();
+
+    return Ok(());
+}
+
+#[allow(non_snake_case)]
+fn zygote_report_cold(params: &mut RequestParams) -> Result<(), SvsmReqError>{
+    let zygote_id = ProcessID(params.r8 as usize);
+    let zygote = PROCESS_STORE.get(zygote_id);
+
+    let init_ptr = ALLOCATION_RANGE_VIRT_START;//zygote.base.alloc_range.0;
+    let init_size = zygote.base.alloc_range.1;
+    let manifest_ptr = TP_MANIFEST_START_VADDR;//zygote.base.alloc_range_manifest.0;
+    let manifest_size = zygote.base.alloc_range_manifest.1;
+    let libos_ptr = TP_LIBOS_START_VADDR;//zygote.base.alloc_range_libos.0;
+    let libos_size = zygote.base.alloc_range_libos.1;
+
+    // calculate the measurements
+    let manifest_measurement = measure(manifest_ptr.into(), manifest_size);
+    let libos_measurement = measure(libos_ptr.into(), libos_size);
+    let init_measurement = measure(init_ptr.into(), init_size);
+    let function_measurement = zygote.measurements.function_measurement;
+
+    // Construct the new report
+    let mut new_report: Vec<u8> = Vec::new();
+
+    if let Some((existing_report, _existing_report_size)) = get_snp_report() {
+        // Copy the existing report data into the new report
+        new_report.extend_from_slice(existing_report);
+    }
+    else {
+        log::info!("SNP report is missing");
+        panic!();
+    }
+
+    // Append the measurements to the new report
+    new_report.extend_from_slice(&init_measurement);
+    new_report.extend_from_slice(&manifest_measurement);
+    new_report.extend_from_slice(&libos_measurement);
+    new_report.extend_from_slice(&function_measurement);
+
+    // Now new_report holds the existing report data + measurements
+    let new_report_size = new_report.len();
+
+    // Perform the copy_back_report with the new cumulative report
+    if params.rcx != 0 {
+        copy_back_report(params.rcx, &new_report, new_report_size);
+    }
+    zygote.base.alloc_range.unmount();
+    return Ok(());
+}
+
+#[allow(non_snake_case)]
+fn prepare_trustlet_report_cold(params: &mut RequestParams) -> Result<(), SvsmReqError>{
+    let trustlet_id = ProcessID(params.r8 as usize);
+    let trustlet = PROCESS_STORE.get(trustlet_id);
+
+    let function_ptr = TP_FUNCTION_START_VADDR;
+
+    // Getting the monitor page table ref
+    let monitor_cr3 = read_cr3().bits() as u64;
+    let monitor_cr3_mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(monitor_cr3)).unwrap();
+    let monitor_pgd_table = vaddr_as_u64_slice!(monitor_cr3_mapping.virt_addr());
+
+    // Getting the trustlet page table ref
+    let trustlet_cr3 = trustlet.context.page_table_ref.process_page_table;
+    let trustlet_cr3_mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(trustlet_cr3)).unwrap();
+    let trustlet_pgd_table = vaddr_as_u64_slice!(trustlet_cr3_mapping.virt_addr());
+
+    let monitor_function_pgd_idx = addr_to_idx(function_ptr as usize, PGD);
+    let trustlet_function_pgd_idx = addr_to_idx(function_ptr as usize, PGD);
+
+    monitor_pgd_table[monitor_function_pgd_idx] = trustlet_pgd_table[trustlet_function_pgd_idx];
+
+    return Ok(());
+}
+
+#[allow(non_snake_case)]
+fn trustlet_report_cold(params: &mut RequestParams) -> Result<(), SvsmReqError>{
+    let trustlet_id = ProcessID(params.r8 as usize);
+    let trustlet = PROCESS_STORE.get(trustlet_id);
+
+    let function_ptr = TP_FUNCTION_START_VADDR;
+    let function_size = trustlet.base.alloc_range_function.1;
+
+    let init_measurement = trustlet.measurements.init_measurement;
+    let manifest_measurement = trustlet.measurements.manifest_measurement;
+    let libos_measurement = trustlet.measurements.libos_measurement;
+    let function_measurement = measure(function_ptr.into(), function_size);
+
+    // Construct the new report
+    let mut new_report: Vec<u8> = Vec::new();
+
+    if let Some((existing_report, _existing_report_size)) = get_snp_report() {
+        // Copy the existing report data into the new report
+        new_report.extend_from_slice(existing_report);
+    }
+    else {
+        log::info!("SNP report is missing");
+        panic!();
+    }
+
+    // Append the measurements to the new report
+    new_report.extend_from_slice(&init_measurement);
+    new_report.extend_from_slice(&manifest_measurement);
+    new_report.extend_from_slice(&libos_measurement);
+    new_report.extend_from_slice(&function_measurement);
+
+    // Now new_report holds the existing report data + measurements
+    let new_report_size = new_report.len();
+
+    // Perform the copy_back_report with the new cumulative report
+    if params.rcx != 0 {
+        copy_back_report(params.rcx, &new_report, new_report_size);
+    }
+
+    return Ok(());
+}
+/* end of helper report generation options for attestation microbenchmarks */

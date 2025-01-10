@@ -36,7 +36,7 @@ fn monitor_init(params: &mut RequestParams) -> Result<(), SvsmReqError>{
 }
 
 fn create_zygote(params: &mut RequestParams) -> Result<(), SvsmReqError>{
-    super::process::create_trusted_process(params,TrustedProcessType::Zygote)
+    super::process::create_trusted_process(params, TrustedProcessType::Zygote)
 }
 
 fn delete_zygote(params: &mut RequestParams) -> Result<(), SvsmReqError> {
@@ -64,7 +64,7 @@ fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
 }
 
 pub fn monitor_call_handler(request: u32, params: &mut RequestParams) -> Result<(), SvsmReqError> {
-    log::info!("request: {}",request);
+    log::debug!("request: {}",request);
     match request {
         MONITOR_INIT => monitor_init(params),
         DIFF_ATTEST => diff_attestation(params),
