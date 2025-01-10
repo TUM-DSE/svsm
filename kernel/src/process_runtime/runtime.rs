@@ -119,11 +119,12 @@ impl MmapManager {
 
     pub fn lookup(&self, addr: usize) -> Option<&MmapInfo> {
         // Search for the range that contains the address
-        self.mappings
-        .range(..=RangeWrapper(addr..(addr + 1))) // Find all ranges up to the address
-        .rev()                                    // Reverse the iterator to start from the largest range
-        .find(|(range, _)| range.0.contains(&addr)) // Check if the range contains the address
-        .map(|(_, info)| info) // Return the associated MmapInfo
+        for (range, info) in self.mappings.range(..=RangeWrapper(addr..usize::max_value())).rev() {
+            if range.0.contains(&addr) {
+                return Some(info);
+            }
+        }
+        None
     }
 }
 
@@ -252,6 +253,7 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
             // update trustlet's page table
             let flags = ProcessPageFlags::FLAG_REUSE;
             page_table_ref.map_4k_page(dst, new_page, flags);
+            log::info!("Mapped new page for the trustlet at 0x{:x}", trustlet.pf_target_vaddr);
         }
     }
 
@@ -716,6 +718,8 @@ impl ProcessRuntime for PALContext  {
         // example: [1..3] < [2..4] < [2..5] < [3..4]
         // page fault hander uses mmap infomation whose range contains the faulting address
         // and priority is given to the latter one in the order
+        // FIXME: as the ordering above does not consider the time of mapping,
+        // the mmap handler might not use the latest mapping that includes the faulting address
         mmap_manger.add_mapping(addr as usize, size as usize, fd as i32, offset as usize);
 
         // Allocate virtul memory address
@@ -892,11 +896,12 @@ impl ProcessRuntime for PALContext  {
         const PF_RESERVED: u64 = 1 << 3;
         const PF_INSTRUCTION: u64 = 1 << 4;
         let mmap_manager = &self.process.mmap_manager;
+        log::info!("[Trustlet] #PF: CR2=0x{:x}", cr2);
         if let Some(mmap_info) = mmap_manager.lookup(cr2 as usize) {
-            log::info!(" [Trustlet] Found file mapping: mmap_info={:?}", mmap_info);
+            log::info!("Found file mapping: mmap_info={:?}", mmap_info);
             if error_code & PF_PRESENT == 0 {
                 // non-presente page
-                log::debug!(" [Trustlet] Page fault: not present page");
+                log::debug!("[Trustlet] Page fault: not present page");
                 let target_page_addr = cr2 & !0xFFF;
                 self.process.pf_target_vaddr = target_page_addr;
                 assert!(target_page_addr >= mmap_info.addr as u64);
@@ -923,19 +928,25 @@ impl ProcessRuntime for PALContext  {
                 // make a guest request to load the page
                 self.return_value = TrustletReturnType::MMAP as u64;
                 return false;
-            } else if error_code & PF_PRESENT != 0 && error_code & PF_WRITE != 0 {
-                // CoW
-                let mut page_table_ref = ProcessPageTableRef::default();
-                page_table_ref.set_external_table(self.vmsa.cr3);
-                // Handle CoW
-                log::debug!(" [Trustlet] CoW: RIP={:#x}, CR2={:#x}, Error code={:?}", rip, cr2, error_code);
-                let user_access = error_code & PF_USER != 0;
-                let handled = page_table_ref.handle_cow(VirtAddr::from(cr2), user_access);
-                if handled {
-                    log::debug!(" [Trustlet] CoW: handled");
-                    return true;
-                }
+            } else {
+                log::info!("[Trustlet] #PF on present mmaped-page");
             }
+        } else {
+            log::info!("[Trustlet] #PF: address is not mmaped-page");
+        }
+        if error_code & PF_PRESENT != 0 && error_code & PF_WRITE != 0 {
+             // CoW
+             let mut page_table_ref = ProcessPageTableRef::default();
+             page_table_ref.set_external_table(self.vmsa.cr3);
+             // Handle CoW
+             log::debug!("[Trustlet] CoW: RIP={:#x}, CR2={:#x}, Error code={:?}", rip, cr2, error_code);
+             let user_access = error_code & PF_USER != 0;
+             let handled = page_table_ref.handle_cow(VirtAddr::from(cr2), user_access);
+             if handled {
+                 log::debug!("[Trustlet] CoW: handled");
+                 return true;
+             }
+             log::info!("[Trustlet] [BUG] CoW: not handled");
         }
 
         // XXX: it should not come here
@@ -946,7 +957,7 @@ impl ProcessRuntime for PALContext  {
         let cr4 = self.vmsa.cr4;
         let rsp = self.vmsa.rsp;
         let rflags = self.vmsa.rflags;
-        log::info!(" [Trustlet] Page Fault!");
+        log::info!("[Trustlet] [BUG] Unhandled Page Fault!");
         log::info!("vmsa EFER: {:?}", efer);
         log::info!("vmsa CR2: {:?}", cr2);
         log::info!("vmsa cr4: {:?}", cr4);
@@ -963,7 +974,7 @@ impl ProcessRuntime for PALContext  {
         let offset = (rsp & 0xFFF) / 8;
         let (_mapping, stack_mapping) = map_paddr!(stack_base_paddr);
         for i in 0..9 {
-            log::info!(" [Trustlet] Stack (rsp+{}): {:#x}", i*8, unsafe{stack_mapping.as_ptr::<u64>().offset((offset + i).try_into().unwrap()).read()});
+            log::info!("[Trustlet] Stack (rsp+{}): {:#x}", i*8, unsafe{stack_mapping.as_ptr::<u64>().offset((offset + i).try_into().unwrap()).read()});
         }
 
         /*
@@ -974,22 +985,21 @@ impl ProcessRuntime for PALContext  {
         return true;
         */
 
-        // #PF for other reasons
-        log::info!(" [Trustlet] Unhandled #PF: RIP={:#x}, CR2={:#x}, Error code={:?}", rip, cr2, error_code);
+        log::info!("[Trustlet] #PF: RIP={:#x}, CR2={:#x}, Error code={:?}", rip, cr2, error_code);
         if error_code & PF_PRESENT == 0 {
-            log::info!(" [Trustlet] Page fault: not present");
+            log::info!("[Trustlet] Page fault: not present");
         }
         if error_code & PF_WRITE != 0 {
-            log::info!(" [Trustlet] Page fault: write");
+            log::info!("[Trustlet] Page fault: write");
         }
         if error_code & PF_USER != 0 {
-            log::info!(" [Trustlet] Page fault: user");
+            log::info!("[Trustlet] Page fault: user");
         }
         if error_code & PF_RESERVED != 0 {
-            log::info!(" [Trustlet] Page fault: reserved");
+            log::info!("[Trustlet] Page fault: reserved");
         }
         if error_code & PF_INSTRUCTION != 0 {
-            log::info!(" [Trustlet] Page fault: instruction fetch");
+            log::info!("[Trustlet] Page fault: instruction fetch");
         }
         false
     }
