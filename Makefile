@@ -1,4 +1,5 @@
 FEATURES ?= "default"
+STAGE2_LOG_LEVEL?="no_print"
 SVSM_ARGS = --features "${FEATURES}"
 #SVSM_ARGS = --no-default-features --features "${FEATURES}"
 
@@ -110,7 +111,7 @@ bin/meta.bin: utils/gen_meta utils/print-meta
 	./utils/gen_meta $@
 
 bin/stage2.bin: bin
-	cargo build --manifest-path kernel/Cargo.toml ${CARGO_ARGS} --no-default-features --bin stage2
+	cargo build --manifest-path kernel/Cargo.toml ${CARGO_ARGS} --no-default-features --features ${STAGE2_LOG_LEVEL} --bin stage2
 	objcopy -O binary ${STAGE2_ELF} $@
 
 bin/svsm-kernel.elf: bin
