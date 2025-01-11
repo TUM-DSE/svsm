@@ -12,6 +12,10 @@ const DELETE_ZYGOTE: u32 = 5;
 const CREATE_TRUSTLET: u32 = 6;
 const DELETE_TRUSTLET: u32 = 7;
 const INVOKE_TRUSTLET: u32 = 8; 
+const _WAIT_FOR_TRUSTLET_RESULT: u32 = 9;  // unused but defined in vmpl.h
+const CREATE_CHANNEL: u32 = 10;
+#[allow(dead_code)]
+const DELETE_CHANNEL: u32 = 11;
 
 const GET_PUBLIC_KEY: u32 = 30;
 const SEND_POLICY: u32 = 31;
@@ -63,6 +67,10 @@ fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     super::super::process_runtime::runtime::invoke_trustlet(params)
 }
 
+fn create_channel(params: &mut RequestParams) -> Result<(), SvsmReqError> {
+    super::super::process_runtime::runtime::create_channel(params)
+}
+
 pub fn monitor_call_handler(request: u32, params: &mut RequestParams) -> Result<(), SvsmReqError> {
     match request {
         MONITOR_INIT => monitor_init(params),
@@ -74,6 +82,7 @@ pub fn monitor_call_handler(request: u32, params: &mut RequestParams) -> Result<
         GET_PUBLIC_KEY => get_public_key(params),
         SEND_POLICY => send_policy(params),
         INVOKE_TRUSTLET => invoke_trustlet(params),
+        CREATE_CHANNEL => create_channel(params),
         _ => Err(SvsmReqError::unsupported_call()),
     }
 }
