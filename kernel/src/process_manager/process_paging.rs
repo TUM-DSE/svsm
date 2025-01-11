@@ -287,7 +287,6 @@ impl ProcessPageTableRef {
         }
         //Add stack
         self.add_stack(VirtAddr::from(TP_STACK_START_VADDR), 8);
-        self.print_table();
         VirtAddr::from(elf.elf_hdr.e_entry)
     }
 
@@ -430,6 +429,22 @@ impl ProcessPageTableRef {
             }
         }
         return ProcessTableLevelMapping::PTE(prev_addr, index);
+    }
+
+    pub fn page_walk_external(&self, vaddr: VirtAddr) -> PhysAddr {
+        let (_pgd_mapping, pgd_table) = paddr_as_table!(self.process_page_table);
+        let mut current_mapping = self.page_walk(&pgd_table, self.process_page_table, vaddr);
+        let mut current_mapping = self.page_walk(&pgd_table, self.process_page_table, vaddr);
+        match current_mapping {
+            ProcessTableLevelMapping::PTE(addr, index) => {
+                let (_mapping, table) = paddr_as_u64_slice!(addr);
+                return PhysAddr::from(table[index]);
+            }
+            _ => return PhysAddr::null()
+        }
+
+
+
     }
 
     pub fn virt_to_phys(&self, vaddr: VirtAddr) -> PhysAddr {

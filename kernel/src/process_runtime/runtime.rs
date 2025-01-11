@@ -46,7 +46,7 @@ pub struct PALContext {
 
 pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
 
-    log::info!("Invoking Trustlet");
+    log::debug!("Invoking Trustlet");
 
     let id = params.rcx;
     let guest_data = params.r8;
@@ -393,7 +393,7 @@ impl ProcessRuntime for PALContext  {
         let fd = self.vmsa.r8;
         let offset = self.vmsa.r9;
 
-        log::info!("{:#}, {}", addr, size);
+        log::debug!("{:#}, {}", addr, size);
 
         let page_table = self.vmsa.cr3;
         let mut page_table_ref = ProcessPageTableRef::default();
