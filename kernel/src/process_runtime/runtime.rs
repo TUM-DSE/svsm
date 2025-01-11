@@ -346,10 +346,10 @@ impl ProcessRuntime for PALContext  {
                 return self.handle_df();
             }
             // Trustlet exit calls
-            0x4FFFFFF7 => {
+            0x4FFFFFA0 => {
                 return self.pal_svsm_call_outb();
             }
-            0x4FFFFFF6 => {
+            0x4FFFFFA1 => {
                 return self.pal_svsm_call_exit();
             }
             // debug
