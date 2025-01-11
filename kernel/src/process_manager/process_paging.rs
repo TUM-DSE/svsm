@@ -53,6 +53,9 @@ bitflags! {
         const COPY_ON_WRITE =   1 << 9; // Use this field to mark CoW pages
 
         const NO_EXECUTE =      1 << 63;
+
+        // Special value that indicates to use the flag in the existing entry
+        const FLAG_REUSE = 1 << 10;
     }
 }
 
@@ -572,7 +575,14 @@ impl ProcessPageTableRef {
                 ProcessTableLevelMapping::PTE(table_phys, index) => {
                     let (pte_mapping, pte_table) = paddr_as_table!(table_phys);
                     rmp_adjust(pte_mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX , PageSize::Regular).unwrap();
-                    pte_table[index].set(addr, flags);
+                    if flags.contains(ProcessPageFlags::FLAG_REUSE){
+                        // Use the same flags as the existing entry (used for lazy page allocation in the mmaped region)
+                        assert!(flags == ProcessPageFlags::FLAG_REUSE);
+                        let orig_flag = pte_table[index].flags();
+                        pte_table[index].set(addr, orig_flag | ProcessPageFlags::PRESENT);
+                    } else {
+                        pte_table[index].set(addr, flags);
+                    }
                     finished = true;
                 },
                 ProcessTableLevelMapping::PMD(table_phys, index) =>  {
