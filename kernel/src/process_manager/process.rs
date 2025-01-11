@@ -251,7 +251,7 @@ pub fn create_trusted_process(params: &mut RequestParams, t: TrustedProcessType)
         TrustedProcessType::Undefined => panic!("Invalid Creation Request"),
         TrustedProcessType::Zygote => {
 
-            log::info!("create_trusted_process(): Creating and registering Zygote");
+            log::debug!("create_trusted_process(): Creating and registering Zygote");
 
             // Create contexts for the Zygote
             // e.g. Copy the Zygote into memory
@@ -269,12 +269,12 @@ pub fn create_trusted_process(params: &mut RequestParams, t: TrustedProcessType)
             // is not
             params.rcx = u64::from_ne_bytes(res.to_ne_bytes());
            
-            log::info!("Created Zygote #{}", params.rcx);
+            log::debug!("Created Zygote #{}", params.rcx);
             Ok(())
         },
         TrustedProcessType::Trustlet => {
 
-            log::info!("create_trusted_process(): Creating and registering Trustlet");
+            log::debug!("create_trusted_process(): Creating and registering Trustlet");
 
             // We get the Zygote ID from the guest
             // Each Trustlet requires one Zygote

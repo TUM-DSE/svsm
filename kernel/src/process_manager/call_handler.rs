@@ -64,7 +64,6 @@ fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
 }
 
 pub fn monitor_call_handler(request: u32, params: &mut RequestParams) -> Result<(), SvsmReqError> {
-    log::info!("request: {}",request);
     match request {
         MONITOR_INIT => monitor_init(params),
         DIFF_ATTEST => diff_attestation(params),

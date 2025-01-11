@@ -6,6 +6,7 @@ use crate::address::PhysAddr;
 use crate::process_manager::process_paging::{ProcessTableLevelMapping, TP_LIBOS_START_VADDR};
 use crate::{address::VirtAddr, cpu::{cpuid::{cpuid_table_raw, CpuidResult}, percpu::{this_cpu, this_cpu_unsafe}}, map_paddr, mm::{PerCPUPageMappingGuard, PAGE_SIZE}, paddr_as_slice, process_manager::{process::{ProcessID, TrustedProcess, PROCESS_STORE}, process_memory::allocate_page, process_paging::{GraminePalProtFlags, ProcessPageFlags, ProcessPageTableRef}}, protocols::{errors::SvsmReqError, RequestParams}, vaddr_as_u64_slice};
 use crate::process_manager::process_paging::ProcessPageTablePage;
+use crate::process_manager::outb::outb;
 
 use crate::{paddr_as_table, vaddr_as_slice};
 use crate::types::PageSize;
@@ -29,6 +30,8 @@ pub trait ProcessRuntime {
     fn pal_svsm_get_result(&mut self) -> bool;
     fn handle_exception(&mut self) -> bool;
     fn handle_df(&mut self) -> bool;
+    fn pal_svsm_call_outb(&mut self) -> bool;
+    fn pal_svsm_call_exit(&mut self) -> bool;
 }
 
 #[derive(Debug)]
@@ -45,7 +48,7 @@ pub struct PALContext {
 
 pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
 
-    log::info!("Invoking Trustlet");
+    log::debug!("Invoking Trustlet");
 
     let id = params.rcx;
     let guest_data = params.r8;
@@ -77,7 +80,9 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     trustlet.context.channel.inflate_input(vmsa.cr3, function_arg_size as usize);
     trustlet.context.channel.inflate_output(vmsa.cr3, result_size as usize);
 
+
     trustlet.context.channel.copy_into(function_arg, guest_page_table, function_arg_size as usize);
+    trustlet.context.channel.input.mount();
 
     let mut rc = PALContext{
         process: trustlet,
@@ -163,6 +168,13 @@ impl ProcessRuntime for PALContext  {
             0x4EFFFFFE => {
                 return self.handle_df();
             }
+            // Trustlet exit calls
+            0x4FFFFFF7 => {
+                return self.pal_svsm_call_outb();
+            }
+            0x4FFFFFF6 => {
+                return self.pal_svsm_call_exit();
+            }
             // debug
             99 => {
                 let c = vmsa.rbx;
@@ -187,13 +199,23 @@ impl ProcessRuntime for PALContext  {
        
     }
 
+    fn pal_svsm_call_exit(&mut self) -> bool {
+        return false;
+    }
+
+    fn pal_svsm_call_outb(&mut self) -> bool {
+        outb(110);
+        return true;
+    }
+
+
     /// Handle CPUID instruction from the trustlet
     /// 
     /// Register arguments:
     /// * rax: cpuid leaf
     /// * rcx: subleaf (if applicable)
     /// 
-    /// Return:
+/// Return:
     /// * rax: eax value of the cpuid result
     /// * rbx: ebx value of the cpuid result
     /// * rcx: ecx value of the cpuid result
@@ -397,7 +419,8 @@ impl ProcessRuntime for PALContext  {
         let fd = self.vmsa.r8;
         let offset = self.vmsa.r9;
 
-        log::info!("[pal_svsm_map] addr={:#x}, size={}", addr, size);
+        log::debug!("[pal_svsm_map] addr={:#x}, size={}", addr, size);
+        log::debug!("{:#}, {}", addr, size);
 
         let page_table = self.vmsa.cr3;
         let mut page_table_ref = ProcessPageTableRef::default();

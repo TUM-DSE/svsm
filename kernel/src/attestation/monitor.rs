@@ -70,6 +70,7 @@ impl Default for ProcessMeasurements {
     }
 }
 
+#[cfg(not(feature = "boottime"))]
 #[allow(non_snake_case)]
 pub fn measure(start_address: u64, size: u64) -> [u8; HASH_SIZE] {
 
@@ -116,6 +117,14 @@ fn sign_report(report: &[u8]) -> [u8; SIGNATURE_SIZE] {
     signature
 }
 
+#[cfg(feature = "boottime")]
+pub fn measure(start_address: u64, size: u64) -> [u8; HASH_SIZE] {
+    let mut hash: [u8; HASH_SIZE] = [0; HASH_SIZE];
+    hash
+}
+
+
+>>>>>>> boottime
 fn copy_back_report(report_buffer: u64, report_data: &[u8], report_size: usize) {
   // Ensure the size is within limits to avoid out-of-bounds access
   assert!(report_size <= PAGE_SIZE, "Report size exceeds the allowed page size.");
