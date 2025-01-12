@@ -257,7 +257,7 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
             // update trustlet's page table
             let flags = ProcessPageFlags::FLAG_REUSE;
             page_table_ref.map_4k_page(dst, new_page, flags);
-            log::info!("Mapped new page for the trustlet at 0x{:x}", trustlet.pf_target_vaddr);
+            log::debug!("Mapped new page for the trustlet at 0x{:x}", trustlet.pf_target_vaddr);
         }
     }
 
@@ -294,7 +294,7 @@ pub fn create_channel(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let tid1 = params.rcx;
     let tid2 = params.rdx;
 
-    log::info!("Creating Channel: tid={} tid={}", tid1, tid2);
+    log::debug!("Creating Channel: tid={} tid={}", tid1, tid2);
 
     // map tid1's output channel to tid2's input channel
 
@@ -317,8 +317,8 @@ pub fn create_channel(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let trustlet2_pgd_table = vaddr_as_u64_slice!(trustlet2_cr3_mapping.virt_addr());
     let trustlet2_input_channel_pgd_idx = addr_to_idx(INPUT_VADDR as usize, PGD);
 
-    log::info!("trustlet1_output_channel_pgd_idx: 0x{:x}", trustlet1_output_channel_pgd_idx);
-    log::info!("trustlet2_input_channel_pgd_idx: 0x{:x}", trustlet2_input_channel_pgd_idx);
+    log::debug!("trustlet1_output_channel_pgd_idx: 0x{:x}", trustlet1_output_channel_pgd_idx);
+    log::debug!("trustlet2_input_channel_pgd_idx: 0x{:x}", trustlet2_input_channel_pgd_idx);
 
     // Update trustlet2's pgd entry
     //  Trustlet1 CR3 -> PGD [OUTPUT_VADDR] -> <PUD A> -> ...
@@ -868,7 +868,7 @@ impl ProcessRuntime for PALContext  {
         let request_type: PalSvsmGuestRequestType = self.vmsa.rbx.try_into().unwrap();
         let data_ptr = self.vmsa.rcx;
         let data_size = self.vmsa.rdx as usize;
-        assert!(data_size <= self.invocation_arg_size, "Data size exceeds the invocation arg size");
+        assert!(data_size <= self.invocation_arg_size, "Data size exceeds the invocation arg size: {} > {}", data_size, self.invocation_arg_size);
 
         let page_table = self.vmsa.cr3;
         let mut page_table_ref = ProcessPageTableRef::default();
@@ -879,7 +879,7 @@ impl ProcessRuntime for PALContext  {
         let data_page = page_table_ref.get_page(VirtAddr::from(data_ptr));
         let offset = (data_ptr & 0xFFF) as usize;
         let (_mapping, data_mapping) = map_paddr!(data_page);
-        assert!(offset + data_size <= PAGE_SIZE_4K as usize, "Data size exceeds page size");
+        assert!(offset + data_size <= PAGE_SIZE_4K as usize, "Data size exceeds page size: offset({}) + data_size({}) = {} > {}", offset, data_size, offset + data_size, PAGE_SIZE_4K as usize);
         let data = unsafe { core::slice::from_raw_parts(data_mapping.as_ptr::<u8>().wrapping_add(offset), data_size) };
 
         // copy the path into the guest arg struct
@@ -918,9 +918,9 @@ impl ProcessRuntime for PALContext  {
         const PF_RESERVED: u64 = 1 << 3;
         const PF_INSTRUCTION: u64 = 1 << 4;
         let mmap_manager = &self.process.mmap_manager;
-        log::info!("[Trustlet] #PF: CR2=0x{:x}", cr2);
+        log::debug!("[Trustlet] #PF: CR2=0x{:x}", cr2);
         if let Some(mmap_info) = mmap_manager.lookup(cr2 as usize) {
-            log::info!("Found file mapping: mmap_info={:?}", mmap_info);
+            log::debug!("Found file mapping: mmap_info={:?}", mmap_info);
             if error_code & PF_PRESENT == 0 {
                 // non-presente page
                 log::debug!("[Trustlet] Page fault: not present page");
@@ -951,10 +951,10 @@ impl ProcessRuntime for PALContext  {
                 self.return_value = TrustletReturnType::MMAP as u64;
                 return false;
             } else {
-                log::info!("[Trustlet] #PF on present mmaped-page");
+                log::debug!("[Trustlet] #PF on present mmaped-page");
             }
         } else {
-            log::info!("[Trustlet] #PF: address is not mmaped-page");
+            log::debug!("[Trustlet] #PF: address is not mmaped-page");
         }
         if error_code & PF_PRESENT != 0 && error_code & PF_WRITE != 0 {
              // CoW
@@ -968,7 +968,7 @@ impl ProcessRuntime for PALContext  {
                  log::debug!("[Trustlet] CoW: handled");
                  return true;
              }
-             log::info!("[Trustlet] [BUG] CoW: not handled");
+             log::debug!("[Trustlet] [BUG] CoW: not handled");
         }
 
         // XXX: it should not come here

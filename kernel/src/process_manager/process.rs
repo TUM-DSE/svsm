@@ -567,9 +567,9 @@ impl ProcessContext {
         // FIXME: propery setup the page flags for the handler
         vmsa.cr4 = vmsa.cr4 & !(1u64 << 20 | 1u64 << 21);
 
-        log::info!("asm_entry_trustlet_pf: {:x}", asm_entry_trustlet_pf as u64);
-        log::info!("asm_entry_trustlet_df: {:x}", asm_entry_trustlet_df as u64);
-        log::info!("gdt_desc: {:x}", unsafe { &gdt_desc as *const u8 as u64 });
+        log::debug!("asm_entry_trustlet_pf: {:x}", asm_entry_trustlet_pf as u64);
+        log::debug!("asm_entry_trustlet_df: {:x}", asm_entry_trustlet_df as u64);
+        log::debug!("gdt_desc: {:x}", unsafe { &gdt_desc as *const u8 as u64 });
 
         // setup IDT
         // 1. setup IDT entry for #PF, #DF
@@ -645,7 +645,7 @@ impl ProcessContext {
             gdt_trustlet_mut().set_tss_entry(desc0, desc1);
         }
         let (base_gdt, limit) = gdt_trustlet().base_limit();
-        log::info!("GDT base: {:x}, limit: {:x}", base_gdt, limit);
+        log::debug!("GDT base: {:x}, limit: {:x}", base_gdt, limit);
         // 1. rmpadjust for GDT
         rmp_adjust(base_gdt.into(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
         // 2. map GDT to trustlet's page table
@@ -685,12 +685,12 @@ impl ProcessContext {
         let efer = vmsa.efer;
         let cr4 = vmsa.cr4;
         let rflags = vmsa.rflags;
-        log::info!("vmsa EFER: {:?}", efer);
-        log::info!("vmsa cr4: {:?}", cr4);
-        log::info!("vmsa CS: {:?}", vmsa.cs);
-        log::info!("vmsa SS: {:?}", vmsa.ss);
-        log::info!("vmsa DS: {:?}", vmsa.ds);
-        log::info!("vmsa rflags: {:?}", rflags);
+        log::debug!("vmsa EFER: {:?}", efer);
+        log::debug!("vmsa cr4: {:?}", cr4);
+        log::debug!("vmsa CS: {:?}", vmsa.cs);
+        log::debug!("vmsa SS: {:?}", vmsa.ss);
+        log::debug!("vmsa DS: {:?}", vmsa.ds);
+        log::debug!("vmsa rflags: {:?}", rflags);
 
         // ------ end of exception handlers setup
 
