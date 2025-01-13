@@ -31,6 +31,7 @@ bitflags! {
         const EXEC = 0x4;
         const WRITECOPY = 0x8;
         const MASK = 0xF;
+        const POPULATE = 0x10;
     }
 }
 

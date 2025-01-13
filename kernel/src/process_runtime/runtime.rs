@@ -729,6 +729,7 @@ impl ProcessRuntime for PALContext  {
         let writable = (flags & GraminePalProtFlags::WRITE.bits()) != 0;
         let executable = (flags & GraminePalProtFlags::EXEC.bits()) != 0;
         let writecopy = (flags & GraminePalProtFlags::WRITECOPY.bits()) != 0;
+        let populate = (flags & GraminePalProtFlags::POPULATE.bits()) != 0;
         let mut flags = ProcessPageFlags::USER_ACCESSIBLE | ProcessPageFlags::ACCESSED;
         if writable {
             flags |= ProcessPageFlags::WRITABLE;
@@ -815,9 +816,21 @@ impl ProcessRuntime for PALContext  {
 
         // Allocate virtul memory address
         // The actual content is loaded upon #PF
+        if populate {
+            flags |= ProcessPageFlags::PRESENT;
+        }
         for i in 0..num_pages {
             let dst = vaddr + (i * PAGE_SIZE_4K).try_into().unwrap(); 
-            page_table_ref.map_4k_page(dst, PhysAddr::new(0), flags);
+            let phys_addr = if populate {
+                // allocate new physical page
+                let page = allocate_page();
+                let (mapping, page_mapped) = paddr_as_slice!(page);
+                rmp_adjust(mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX , PageSize::Regular).unwrap();
+                page
+            } else  {
+                PhysAddr::new(0)
+            };
+            page_table_ref.map_4k_page(dst, phys_addr, flags)
         }
 
         self.vmsa.rcx = u64::from_ne_bytes((0i64).to_ne_bytes());
@@ -854,6 +867,9 @@ impl ProcessRuntime for PALContext  {
         let writable = flags & GraminePalProtFlags::WRITE.bits() != 0;
         let executable = flags & GraminePalProtFlags::EXEC.bits() != 0;
         let writecopy = flags & GraminePalProtFlags::WRITECOPY.bits() != 0;
+        let populate = flags & GraminePalProtFlags::POPULATE.bits() != 0;
+
+        assert!(populate == false, "POPULATE is not supported yet");
 
         // FIXME: this walks the page table every time. we can optimize this by updating entries while walking
         for i in 0..page_num {
