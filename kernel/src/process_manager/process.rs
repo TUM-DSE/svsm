@@ -400,6 +400,8 @@ pub struct ProcessContext {
     pub sev_features: u64,
     pub measurements: ProcessMeasurements,
     pub page_table_ref: ProcessPageTableRef,
+    pub read_request_ptr: u64,
+    pub read_request_buf_size: u64,
 }
 
 impl Default for ProcessContext {
@@ -411,6 +413,8 @@ impl Default for ProcessContext {
             sev_features: 0,
             measurements: ProcessMeasurements::default(),
             page_table_ref: ProcessPageTableRef::default(),
+            read_request_ptr: 0,
+            read_request_buf_size: 0,
         }
     }
 }
