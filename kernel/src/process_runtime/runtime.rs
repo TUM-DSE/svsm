@@ -13,6 +13,7 @@ use crate::process_manager::process_paging::{ProcessTableLevelMapping, TP_LIBOS_
 use crate::{address::VirtAddr, cpu::{cpuid::{cpuid_table_raw, CpuidResult}, percpu::{this_cpu, this_cpu_unsafe}}, map_paddr, mm::{PerCPUPageMappingGuard, PAGE_SIZE}, paddr_as_slice, process_manager::{process::{ProcessID, TrustedProcess, PROCESS_STORE}, process_memory::allocate_page, process_paging::{GraminePalProtFlags, ProcessPageFlags, ProcessPageTableRef}}, protocols::{errors::SvsmReqError, RequestParams}, vaddr_as_u64_slice};
 use crate::process_manager::process_paging::ProcessPageTablePage;
 use crate::process_manager::outb::outb;
+use crate::protocols::errors::SvsmResultCode;
 
 use crate::{debug, paddr_as_table, vaddr_as_slice};
 use crate::types::PageSize;
@@ -257,14 +258,19 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
             let guest_buf_addr = guest_arg[0];
             let guest_buf_size = guest_arg[1];
             let guest_read_count = guest_arg[2];
+            if guest_read_count == u64::MAX {
+                // guest read error
+                // TODO: handle error
+                log::debug!("GuestRequest: Read2: guest_read_count is -1");
+            }
             //arg[2] = guest_read_count; // FIXME: this causes #PF, why?
             log::debug!("GuestRequest: Read2: guest_read_count: {}", guest_read_count);
             log::debug!("GuestRequest: Read2: guest_buf_addr: 0x{:x}", guest_buf_addr);
             log::debug!("GuestRequest: Read2: guest_read_count: {}", guest_read_count);
             log::debug!("GuestRequest: Read2: trustlet_buf_addr: 0x{:x}", trustlet_buf_addr);
             log::debug!("GuestRequest: Read2: trustlet_buf_size: {}", trustlet_buf_size);
-            assert!(guest_buf_size >= guest_read_count, "Guest buffer size is smaller than read count");
-            assert!(trustlet_buf_size >= guest_read_count, "Trustlet buffer size is smaller than read count");
+            assert!(guest_buf_size >= guest_read_count, "Guest buffer size is smaller than read count: {} {}", guest_buf_size, guest_read_count);
+            assert!(trustlet_buf_size >= guest_read_count, "Trustlet buffer size is smaller than read count: {} {}", trustlet_buf_size, guest_read_count);
             assert!(guest_buf_addr % 4096 == 0, "Guest buffer address is not page aligned");
             assert!(trustlet_buf_addr % 4096 == 0, "Trustlet buffer address is not page aligned");
 
