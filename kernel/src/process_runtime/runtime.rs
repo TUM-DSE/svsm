@@ -41,7 +41,9 @@ pub trait ProcessRuntime {
     fn handle_exception(&mut self) -> bool;
     fn handle_df(&mut self) -> bool;
     fn pal_svsm_call_outb(&mut self) -> bool;
+    fn pal_svsm_call_outb_with_value(&mut self) -> bool;
     fn pal_svsm_call_exit(&mut self) -> bool;
+    fn pal_svsm_inflate_channel(&mut self) -> bool;
 }
 
 /// Invocation type of invokeTrustlet
@@ -400,6 +402,12 @@ impl ProcessRuntime for PALContext  {
             0x4FFFFFA1 => {
                 return self.pal_svsm_call_exit();
             }
+            0x4FFFFFA2 => {
+                return self.pal_svsm_call_outb_with_value();
+            }
+            0x4FFFFFA3 => {
+                return self.pal_svsm_inflate_channel();
+            }
             // debug
             99 => {
                 let c = vmsa.rbx;
@@ -433,6 +441,23 @@ impl ProcessRuntime for PALContext  {
         return true;
     }
 
+    fn pal_svsm_call_outb_with_value(&mut self) -> bool {
+        let value = self.vmsa.rcx;
+        outb(value);
+        return true;
+    }
+
+    fn pal_svsm_inflate_channel(&mut self) -> bool {
+        let select = self.vmsa.rcx;
+        let size = self.vmsa.rdx;
+        if select == 0 {
+            self.process.context.channel.inflate_input(self.vmsa.cr3, size as usize);
+        }
+        if select == 1 {
+            self.process.context.channel.inflate_output(self.vmsa.cr3, size as usize);
+        }
+        return true;
+    }
 
     /// Handle CPUID instruction from the trustlet
     /// 
