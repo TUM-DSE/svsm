@@ -54,6 +54,9 @@ bitflags! {
         const COPY_ON_WRITE =   1 << 9; // Use this field to mark CoW pages
 
         const NO_EXECUTE =      1 << 63;
+
+        // Special value that indicates to use the flag in the existing entry
+        const FLAG_REUSE = 1 << 10;
     }
 }
 
@@ -287,7 +290,6 @@ impl ProcessPageTableRef {
         }
         //Add stack
         self.add_stack(VirtAddr::from(TP_STACK_START_VADDR), 8);
-        self.print_table();
         VirtAddr::from(elf.elf_hdr.e_entry)
     }
 
@@ -432,6 +434,22 @@ impl ProcessPageTableRef {
         return ProcessTableLevelMapping::PTE(prev_addr, index);
     }
 
+    pub fn page_walk_external(&self, vaddr: VirtAddr) -> PhysAddr {
+        let (_pgd_mapping, pgd_table) = paddr_as_table!(self.process_page_table);
+        let mut current_mapping = self.page_walk(&pgd_table, self.process_page_table, vaddr);
+        let mut current_mapping = self.page_walk(&pgd_table, self.process_page_table, vaddr);
+        match current_mapping {
+            ProcessTableLevelMapping::PTE(addr, index) => {
+                let (_mapping, table) = paddr_as_u64_slice!(addr);
+                return PhysAddr::from(table[index]);
+            }
+            _ => return PhysAddr::null()
+        }
+
+
+
+    }
+
     pub fn virt_to_phys(&self, vaddr: VirtAddr) -> PhysAddr {
         let (_pgd_mapping, pgd_table) = paddr_as_table!(self.process_page_table);
         let mut current_mapping = self.page_walk(&pgd_table, self.process_page_table, vaddr);
@@ -555,7 +573,14 @@ impl ProcessPageTableRef {
                 ProcessTableLevelMapping::PTE(table_phys, index) => {
                     let (pte_mapping, pte_table) = paddr_as_table!(table_phys);
                     rmp_adjust(pte_mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX , PageSize::Regular).unwrap();
-                    pte_table[index].set(addr, flags);
+                    if flags.contains(ProcessPageFlags::FLAG_REUSE){
+                        // Use the same flags as the existing entry (used for lazy page allocation in the mmaped region)
+                        assert!(flags == ProcessPageFlags::FLAG_REUSE);
+                        let orig_flag = pte_table[index].flags();
+                        pte_table[index].set(addr, orig_flag | ProcessPageFlags::PRESENT);
+                    } else {
+                        pte_table[index].set(addr, flags);
+                    }
                     finished = true;
                 },
                 ProcessTableLevelMapping::PMD(table_phys, index) =>  {

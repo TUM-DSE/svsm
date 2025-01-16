@@ -55,6 +55,9 @@ use svsm::task::exec_user;
 use svsm::task::{create_kernel_task, schedule_init};
 use svsm::types::{PageSize, GUEST_VMPL, PAGE_SIZE};
 use svsm::utils::{halt, immut_after_init::ImmutAfterInitCell, zero_mem_region};
+use core::arch::asm;
+use svsm::process_manager::outb::outb;  
+
 #[cfg(all(feature = "mstpm", not(test)))]
 use svsm::vtpm::vtpm_init;
 use svsm::mm::validate::{init_valid_bitmap_ptr, migrate_valid_bitmap};
@@ -403,7 +406,11 @@ pub extern "C" fn svsm_start(li: &KernelLaunchInfo, vb_addr: usize) {
 
 #[no_mangle]
 pub extern "C" fn svsm_main() {
+
+    outb(0);
+
     let platform = SVSM_PLATFORM.as_dyn_ref();
+
 
     // If required, the GDB stub can be started earlier, just after the console
     // is initialised in svsm_start() above.
@@ -473,6 +480,7 @@ pub extern "C" fn svsm_main() {
     virt_log_usage();
 
     if config.should_launch_fw() {
+        outb(1);
         if let Err(e) = launch_fw(&config) {
             panic!("Failed to launch FW: {:#?}", e);
         }

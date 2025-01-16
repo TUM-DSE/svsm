@@ -36,18 +36,22 @@ gdbstub = { workspace = true, optional = true }
 gdbstub_arch = { workspace = true, optional = true }
 igvm_defs = { workspace = true, features = ["unstable"] }
 intrusive-collections.workspace = true
-log = { workspace = true, features = ["max_level_info", "release_max_level_info"] }
+log = { workspace = true, features = [] }
 packit.workspace = true
 libmstpm = { workspace = true, optional = true }
+num_enum =  { version="0.7.3", default-features = false }
 
 [target."x86_64-unknown-none".dev-dependencies]
 test.workspace = true
 
 [features]
-default = ["mstpm"]
+default = []
 default-test = []
 enable-gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 mstpm = ["dep:libmstpm"]
+boottime = []
+no_print = ["log/max_level_error"]
+print = ["log/max_level_info"]
 
 [dev-dependencies]
 

@@ -18,8 +18,9 @@ use crate::mm::pagetable::PageTableRef;
 use crate::mm::SVSM_PERCPU_VMSA_BASE;
 use crate::process_manager::process_memory::allocate_page;
 use crate::process_manager::allocation::AllocationRange;
-use crate::process_manager::process_paging::ProcessPageTableRef;
+use crate::process_manager::process_paging::{ProcessPageTableRef, TP_MANIFEST_START_VADDR};
 use crate::process_manager::process_paging::ProcessPageFlags;
+use crate::process_runtime::runtime::MmapManager;
 use crate::protocols::errors::SvsmReqError;
 use crate::protocols::RequestParams;
 use crate::sev::RMPFlags;
@@ -81,8 +82,8 @@ impl TrustedProcessStore {
         ptr.push(process);
     }
     pub fn init(&self, size: u32){
-        let empty_process = TrustedProcess::empty();
         for _ in 0..size  {
+            let empty_process = TrustedProcess::empty();
             self.push(empty_process);
         }
     }
@@ -122,7 +123,7 @@ impl ProcessData {
 #[derive(Clone,Copy,Debug, Default)]
 pub struct ProcessID(pub usize);
 
-#[derive(Clone,Copy,Debug)]
+#[derive(Clone,Debug)]
 pub struct TrustedProcess {
     pub process_type: TrustedProcessType,
     pub id: u64,
@@ -131,7 +132,8 @@ pub struct TrustedProcess {
     pub measurements: ProcessMeasurements,
     #[allow(dead_code)]
     pub context: ProcessContext,
-    //pub channel: MemoryChannel,
+    pub mmap_manager: MmapManager,
+    pub pf_target_vaddr: u64,
 }
 
 impl TrustedProcess {
@@ -186,6 +188,8 @@ impl TrustedProcess {
             base,
             measurements,
             context: ProcessContext::default(),
+            mmap_manager: MmapManager::new(),
+            pf_target_vaddr: 0,
         }
     }
 
@@ -203,6 +207,8 @@ impl TrustedProcess {
             base,
             measurements,
             context,
+            mmap_manager: MmapManager::new(),
+            pf_target_vaddr: 0,
         }
 
     }
@@ -235,6 +241,8 @@ impl TrustedProcess {
             base: ProcessBaseContext::default(),
             measurements: ProcessMeasurements::default(),
             context: ProcessContext::default(),
+            mmap_manager: MmapManager::new(),
+            pf_target_vaddr: 0,
         }
     }
 

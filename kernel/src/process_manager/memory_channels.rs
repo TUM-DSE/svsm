@@ -4,8 +4,8 @@ use crate::{address::{PhysAddr, VirtAddr}, cpu::flush_tlb_global, map_paddr, mm:
 
 use super::{allocation::AllocationRange, process::ProcessID, process_paging::ProcessPageTableRef};
 
-pub const INPUT_VADDR: u64 = 0x28000000000u64;
-pub const OUTPUT_VADDR: u64 = 0x30000000000u64;
+pub const INPUT_VADDR: u64 = 0x280_0000_0000u64;
+pub const OUTPUT_VADDR: u64 = 0x300_0000_0000u64;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MemoryChannel {
