@@ -20,6 +20,7 @@ pub const TP_STACK_START_VADDR: u64 = 0x80_0000_0000;
 pub const TP_KERN_STACK_START_VADDR: u64 = 0x90_0000_0000;
 pub const TP_MANIFEST_START_VADDR: u64 = 0x100_0000_0000;
 pub const TP_LIBOS_START_VADDR: u64 = 0x180_0000_0000;
+pub const TP_FUNCTION_START_VADDR: u64 = 0x140_0000_0000;
 
 // Gramine PAL protection flags (pal_prot_flags_t)
 bitflags! {
@@ -273,9 +274,6 @@ impl ProcessPageTableRef {
             let target_addr = vaddr + i * PAGE_SIZE_4K;
             self.map_4k_page(VirtAddr::from(target_addr), new_page, page_flags);
         }
-
-
-
     }
 
     fn build_from_elf(&self, _elf_addr: *mut u8, elf_file: &[u8], elf: elf::Elf64File<'static>) -> VirtAddr{
@@ -310,7 +308,7 @@ impl ProcessPageTableRef {
     pub fn add_function(&self, data:VirtAddr, size: u64) {
         let data: *mut u8 = data.as_mut_ptr::<u8>();
         let data = unsafe { slice::from_raw_parts(data, size as usize) };
-        self.add_region_vaddr(VirtAddr::from(0x140_0000_0000u64), data);
+        self.add_region_vaddr(VirtAddr::from(TP_FUNCTION_START_VADDR), data);
     }
 
     pub fn add_pages(&self, start: VirtAddr, size: u64, flags: ProcessPageFlags) {
@@ -339,7 +337,7 @@ impl ProcessPageTableRef {
         let elf_addr: *mut u8 = data.as_mut_ptr::<u8>();
         let elf_raw = unsafe { slice::from_raw_parts(elf_addr, size as usize) };
         match elf::Elf64File::read(elf_raw) {
-            Ok(e) => self.build_from_elf(elf_addr,elf_raw, e),
+            Ok(e) => self.build_from_elf(elf_addr, elf_raw, e),
             Err(e) => {log::info!("error reading ELF: {}", e);
                        panic!()},
         }

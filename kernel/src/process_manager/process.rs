@@ -18,7 +18,7 @@ use crate::mm::pagetable::PageTableRef;
 use crate::mm::SVSM_PERCPU_VMSA_BASE;
 use crate::process_manager::process_memory::allocate_page;
 use crate::process_manager::allocation::AllocationRange;
-use crate::process_manager::process_paging::{ProcessPageTableRef, TP_MANIFEST_START_VADDR};
+use crate::process_manager::process_paging::ProcessPageTableRef;
 use crate::process_manager::process_paging::ProcessPageFlags;
 use crate::process_runtime::runtime::MmapManager;
 use crate::protocols::errors::SvsmReqError;
@@ -38,6 +38,7 @@ use cpuarch::vmsa::VMSA;
 use core::mem::replace;
 
 use super::process_paging::{TP_STACK_START_VADDR,TP_KERN_STACK_START_VADDR};
+use super::process_paging::{TP_LIBOS_START_VADDR,TP_MANIFEST_START_VADDR};
 use super::memory_channels::MemoryChannel;
 use crate::attestation::monitor::{ProcessMeasurements, measure};
 
@@ -159,18 +160,24 @@ impl TrustedProcess {
         let mut measurements = ProcessMeasurements::default();
 
         let (pal_data, pal_range) = ProcessPageTableRef::copy_data_from_guest(pal, pal_size, pgt);
+        log::debug!("pal_data {:?} pal_range {:?}", pal_data, pal_range);
         base.init_with_data(pal_data, pal_size, pal_range);
         measurements.init_measurement = measure(pal_data.into(), pal_size);
+        pal_range.unmount();
         log::debug!("TODO: Compare with pal measurement of the policy");
 
         let (manifest_data, manifest_range) = ProcessPageTableRef::copy_data_from_guest(manifest, manifest_size, pgt);
+        log::debug!("manifest_range {:?}", manifest_range);
         base.add_manifest(manifest_data, manifest_size, manifest_range);
         measurements.manifest_measurement = measure(manifest_data.into(), manifest_size);
+        manifest_range.unmount();
         log::debug!("TODO: Compare with manifest measurement of the policy");
 
         let (libos_data, libos_range) = ProcessPageTableRef::copy_data_from_guest(libos, libos_size, pgt);
+        log::debug!("libos_range {:?}", libos_range);
         base.add_libos(libos_data, libos_size, libos_range);
         measurements.libos_measurement = measure(libos_data.into(), libos_size);
+        libos_range.unmount();
         log::debug!("TODO: Compare with libos measurement of the policy");
 
         // TODO: Free zygote data
@@ -211,6 +218,8 @@ impl TrustedProcess {
         let mut trustlet = TrustedProcess::dublicate(parent);
         if data != 0 {
             let (function_code, function_code_range) = ProcessPageTableRef::copy_data_from_guest(data, size, pgt);
+            trustlet.base.alloc_range_function.0 = function_code_range.0;
+            trustlet.base.alloc_range_function.1 = size;
 
             log::debug!("Measuring trustlet function");
             trustlet.measurements.function_measurement = measure(function_code.into(), size);
@@ -219,7 +228,7 @@ impl TrustedProcess {
             log::debug!("Adding trustlet function");
             let size = (4096 - (size & 0xFFF)) + size;
             trustlet.context.page_table_ref.add_function(function_code, size);
-            function_code_range.delete();
+            // function_code_range.delete();
         }
         trustlet
     }
@@ -352,6 +361,7 @@ pub struct ProcessBaseContext {
     pub alloc_range: AllocationRange,
     pub alloc_range_manifest: AllocationRange,
     pub alloc_range_libos: AllocationRange,
+    pub alloc_range_function: AllocationRange,
 }
 
 impl Default for ProcessBaseContext {
@@ -362,6 +372,7 @@ impl Default for ProcessBaseContext {
           alloc_range: AllocationRange(0,0),
           alloc_range_manifest: AllocationRange(0,0),
           alloc_range_libos: AllocationRange(0,0),
+          alloc_range_function: AllocationRange(0,0),
       }
   }
 }
@@ -374,20 +385,25 @@ impl ProcessBaseContext {
     }
 
     pub fn add_manifest(&mut self, manifest: VirtAddr, size: u64, data: AllocationRange) {
+        let orig_size = size;
         let size = (4096 - (size & 0xFFF)) + size;
         self.page_table_ref.add_manifest(manifest, size);
-        self.alloc_range_manifest = data;
+        self.alloc_range_manifest.0 = data.0;
+        self.alloc_range_manifest.1 = orig_size;
     }
 
     pub fn add_libos(&mut self, libos: VirtAddr, size: u64, data: AllocationRange){
+        let orig_size = size;
         let size = (4096 - (size & 0xFFF)) + size;
         self.page_table_ref.add_libos(libos,size);
-        self.alloc_range_libos = data;
+        self.alloc_range_libos.0 = data.0;
+        self.alloc_range_libos.1 = orig_size;
     }
 
     pub fn init_with_data(&mut self, elf: VirtAddr, size: u64, data: AllocationRange) {
         self.init(elf, size);
-        self.alloc_range = data;
+        self.alloc_range.0 = data.0;
+        self.alloc_range.1 = size;
     }
 
 }
@@ -567,9 +583,9 @@ impl ProcessContext {
         // FIXME: propery setup the page flags for the handler
         vmsa.cr4 = vmsa.cr4 & !(1u64 << 20 | 1u64 << 21);
 
-        log::info!("asm_entry_trustlet_pf: {:x}", asm_entry_trustlet_pf as u64);
-        log::info!("asm_entry_trustlet_df: {:x}", asm_entry_trustlet_df as u64);
-        log::info!("gdt_desc: {:x}", unsafe { &gdt_desc as *const u8 as u64 });
+        log::debug!("asm_entry_trustlet_pf: {:x}", asm_entry_trustlet_pf as u64);
+        log::debug!("asm_entry_trustlet_df: {:x}", asm_entry_trustlet_df as u64);
+        log::debug!("gdt_desc: {:x}", unsafe { &gdt_desc as *const u8 as u64 });
 
         // setup IDT
         // 1. setup IDT entry for #PF, #DF
@@ -645,7 +661,7 @@ impl ProcessContext {
             gdt_trustlet_mut().set_tss_entry(desc0, desc1);
         }
         let (base_gdt, limit) = gdt_trustlet().base_limit();
-        log::info!("GDT base: {:x}, limit: {:x}", base_gdt, limit);
+        log::debug!("GDT base: {:x}, limit: {:x}", base_gdt, limit);
         // 1. rmpadjust for GDT
         rmp_adjust(base_gdt.into(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
         // 2. map GDT to trustlet's page table
@@ -685,22 +701,22 @@ impl ProcessContext {
         let efer = vmsa.efer;
         let cr4 = vmsa.cr4;
         let rflags = vmsa.rflags;
-        log::info!("vmsa EFER: {:?}", efer);
-        log::info!("vmsa cr4: {:?}", cr4);
-        log::info!("vmsa CS: {:?}", vmsa.cs);
-        log::info!("vmsa SS: {:?}", vmsa.ss);
-        log::info!("vmsa DS: {:?}", vmsa.ds);
-        log::info!("vmsa rflags: {:?}", rflags);
+        log::debug!("vmsa EFER: {:?}", efer);
+        log::debug!("vmsa cr4: {:?}", cr4);
+        log::debug!("vmsa CS: {:?}", vmsa.cs);
+        log::debug!("vmsa SS: {:?}", vmsa.ss);
+        log::debug!("vmsa DS: {:?}", vmsa.ds);
+        log::debug!("vmsa rflags: {:?}", rflags);
 
         // ------ end of exception handlers setup
 
         //Check VMSA
         let svme_mask: u64 = 1u64 << 12;
         if !check_vmsa_ind(vmsa, vmsa.sev_features, svme_mask, RMPFlags::VMPL1.bits()) {
-            log::info!("VMSA Check failed");
-            log::info!("Bits: {}",vmsa.vmpl == RMPFlags::VMPL1.bits() as u8);
-            log::info!("Efer & vsme_mask: {}", vmsa.efer & svme_mask == svme_mask);
-            log::info!("SEV features: {}", vmsa.sev_features == vmsa.sev_features);
+            log::debug!("VMSA Check failed");
+            log::debug!("Bits: {}",vmsa.vmpl == RMPFlags::VMPL1.bits() as u8);
+            log::debug!("Efer & vsme_mask: {}", vmsa.efer & svme_mask == svme_mask);
+            log::debug!("SEV features: {}", vmsa.sev_features == vmsa.sev_features);
             panic!("Failed to create new VMSA");
         }
 

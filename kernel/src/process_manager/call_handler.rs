@@ -40,7 +40,7 @@ fn monitor_init(params: &mut RequestParams) -> Result<(), SvsmReqError>{
 }
 
 fn create_zygote(params: &mut RequestParams) -> Result<(), SvsmReqError>{
-    super::process::create_trusted_process(params,TrustedProcessType::Zygote)
+    super::process::create_trusted_process(params, TrustedProcessType::Zygote)
 }
 
 fn delete_zygote(params: &mut RequestParams) -> Result<(), SvsmReqError> {
