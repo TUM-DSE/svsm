@@ -18,7 +18,7 @@ use crate::mm::pagetable::PageTableRef;
 use crate::mm::SVSM_PERCPU_VMSA_BASE;
 use crate::process_manager::process_memory::allocate_page;
 use crate::process_manager::allocation::AllocationRange;
-use crate::process_manager::process_paging::{ProcessPageTableRef, TP_MANIFEST_START_VADDR};
+use crate::process_manager::process_paging::ProcessPageTableRef;
 use crate::process_manager::process_paging::ProcessPageFlags;
 use crate::process_runtime::runtime::MmapManager;
 use crate::protocols::errors::SvsmReqError;
