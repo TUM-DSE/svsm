@@ -474,10 +474,15 @@ global_asm!(
     .section .text
     .global asm_entry_trustlet_pf
     asm_entry_trustlet_pf:
+        pushq %rcx
+        movq $14, %rcx
+        jmp asm_entry_with_error_code
+
+    asm_entry_with_error_code:
        # #PF pushes the error code on the stack
        pushq %rax
        pushq %rbx
-       movq 16(%rsp), %rbx      # load error code
+       movq 24(%rsp), %rbx      # load error code
        movq $0x4EFFFFFF, %rax   # monitor call number
        cpuid                    # call the monitor
 
@@ -486,9 +491,17 @@ global_asm!(
 
        popq %rbx
        popq %rax
+       popq %rcx
        addq $8, %rsp            # remove error code
 
        iretq
+
+    .global asm_entry_trustlet_gp
+    asm_entry_trustlet_gp:
+        # #GP pushes the error code on the stack
+        pushq %rcx
+        movq $13, %rcx
+        jmp asm_entry_with_error_code
 
     .global asm_entry_trustlet_df
     asm_entry_trustlet_df:
@@ -527,6 +540,7 @@ global_asm!(
 extern "C" {
     fn asm_entry_trustlet_pf();
     fn asm_entry_trustlet_df();
+    fn asm_entry_trustlet_gp();
     static gdt_desc: u8;
 }
 
@@ -570,9 +584,8 @@ impl ProcessContext {
         vmsa.sev_features = old_vmsa_ptr.sev_features | 4; // 4 is for #VC Reflect
         vmsa.rflags &= !(1u64 << 9); // Clear IF;
         // New Stack
-        vmsa.rbp = u64::from(TP_STACK_START_VADDR)+8*4096-1;
-        vmsa.rsp = u64::from(TP_STACK_START_VADDR)+8*4096-1;
-
+        vmsa.rbp = u64::from(TP_STACK_START_VADDR)+8*4096;
+        vmsa.rsp = u64::from(TP_STACK_START_VADDR)+8*4096;
         // ---
         // Setup exception handlers
 
@@ -590,6 +603,7 @@ impl ProcessContext {
         // setup IDT
         // 1. setup IDT entry for #PF, #DF
         idt_trustlet_mut().set_entry(PF_VECTOR, IdtEntry::trap_entry(asm_entry_trustlet_pf));
+        idt_trustlet_mut().set_entry(GP_VECTOR, IdtEntry::trap_entry(asm_entry_trustlet_gp));
         idt_trustlet_mut().set_entry(DF_VECTOR, IdtEntry::entry(asm_entry_trustlet_df));
         //idt_trustlet_mut().set_entry(GP_VECTOR, IdtEntry::trap_entry(asm_entry_trustlet_df));
         // 2. rmpadjust for IDT and handlers
