@@ -18,6 +18,7 @@ use crate::utils::{MemoryRegion};
 use crate::mm::phys_to_virt;
 use crate::{paddr_as_u64_slice, map_paddr, vaddr_as_u64_slice};
 use crate::mm::memory::get_memory_region_from_map;
+use crate::address::Address;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -226,6 +227,9 @@ impl ProcessMemConfig{
         let entry: &mut PhysAddr = unsafe {&mut *((addr) as *mut PhysAddr)};
         let tmp = *entry;
         *entry = PhysAddr::null();
+
+        let (_mapping, a) = paddr_as_u64_slice!(tmp);
+        a.fill(0);
         tmp
     }
 
@@ -237,6 +241,32 @@ impl ProcessMemConfig{
             self.page_base = self.page_base + PAGE_SIZE;
         }
         addr
+    }
+
+    pub fn add_free_page(&mut self, free: PhysAddr) {
+        debug_assert_eq!(free.bits() & PAGE_SIZE - 1, 0);
+
+        if cfg!(debug_assertions) {
+            for addr in (self.free_page_list..(self.free_page_list + (self.free_page_list_used_len as u64 * ADDRESS_LENGTH))).step_by(ADDRESS_LENGTH as usize) {
+                unsafe { assert_ne!(*(addr as *mut PhysAddr), free); }
+            }
+
+            if free.bits() < 0x100c00000 || free.bits() > 0x10e000000 {
+                log::info!("freeing wrong page? {:#x}", free);
+            }
+        }
+
+        let addr = self.free_page_list + (self.free_page_list_used_len as u64 * ADDRESS_LENGTH);
+        let entry = addr as *mut PhysAddr;
+        unsafe {
+            debug_assert_eq!(entry.read(), PhysAddr::null());
+            entry.write(free);
+        }
+        self.free_page_list_used_len += 1;
+    }
+
+    fn allocated_amount(&mut self) -> usize {
+        self.page_base.bits() - self.free_page_list_used_len * PAGE_SIZE
     }
 
     pub fn virt_to_phys(&self, vaddr: VirtAddr) -> PhysAddr {
@@ -261,6 +291,14 @@ impl ProcessMemConfig{
 
 pub fn allocate_page() -> PhysAddr {
     PROCESS_MEM_CONFIG.lock().get_free_page()
+}
+
+pub fn free_page(addr: PhysAddr) {
+    PROCESS_MEM_CONFIG.lock().add_free_page(addr)
+}
+
+pub fn allocated_amount() -> usize {
+    PROCESS_MEM_CONFIG.lock().allocated_amount()
 }
 
 pub fn additional_monitor_memory_init() -> Result<(), SvsmError> {

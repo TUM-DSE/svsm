@@ -182,6 +182,9 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let invocation_arg_guest_vaddr = invoke_data_struct[5];
     let invocation_arg_size = invoke_data_struct[6] as usize;
 
+    range.unmount();
+    range.delete();
+
     let trustlet = PROCESS_STORE.get(ProcessID(id.try_into().unwrap()));
 
     // Getting the current processes VMSA

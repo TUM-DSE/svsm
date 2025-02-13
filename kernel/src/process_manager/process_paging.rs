@@ -10,7 +10,7 @@ use core::ops::{Index, IndexMut};
 use core::slice;
 use core::mem::replace;
 use crate::types::PageSize;
-use super::process_memory::{ALLOCATION_RANGE_VIRT_START, PGD, PMD, PTE, PUD};
+use super::process_memory::{free_page, ALLOCATION_RANGE_VIRT_START, PGD, PMD, PTE, PUD};
 use crate::process_manager::allocation::AllocationRange;
 use core::ffi::CStr;
 use super::memory_helper::{ZERO_PAGE};
@@ -313,11 +313,19 @@ impl ProcessPageTableRef {
 
     pub fn add_pages(&self, start: VirtAddr, size: u64, flags: ProcessPageFlags) {
         for i in 0..(size as usize) {
-            let new_page = allocate_page();
-            let (mapping, s) = paddr_as_slice!(new_page);
-            _ = replace(s, ZERO_PAGE);
-            self.map_4k_page(start + i * PAGE_SIZE, new_page, flags);
-            rmp_adjust(mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
+            let page = self.get_page(start + i * PAGE_SIZE);
+            if page != PhysAddr::null() { // handles overwirtes so that no memory leaks
+                let (mapping, s) = paddr_as_slice!(page);
+                let _ = replace(s, ZERO_PAGE);
+                self.map_4k_page(start + i * PAGE_SIZE, page, flags);
+                rmp_adjust(mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
+            } else {
+                let new_page = allocate_page();
+                let (mapping, s) = paddr_as_slice!(new_page);
+                _ = replace(s, ZERO_PAGE);
+                self.map_4k_page(start + i * PAGE_SIZE, new_page, flags);
+                rmp_adjust(mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
+            }
         }
     }
 
@@ -560,6 +568,9 @@ impl ProcessPageTableRef {
     }
 
     pub fn map_4k_page(&self, target: VirtAddr, addr: PhysAddr, flags: ProcessPageFlags) {
+        if cfg!(debug_assertions) && self.get_page(target) != PhysAddr::null() {
+            log::info!("overwriting {:#x} mapping", target);
+        }
         let (_pgd_mapping, pgd_table) = paddr_as_table!(self.process_page_table);
         let mut current_mapping = self.page_walk(&pgd_table, self.process_page_table, target);
 
@@ -733,5 +744,68 @@ impl ProcessPageTableRef {
                 return false;
             }
         }
+    }
+
+    pub fn delete(self, keep: &[VirtAddr]) {
+        // todo: CoW pages deletion logic
+
+        let (_mapping, pgd_table) = paddr_as_table!(self.process_page_table);
+        for i in 0..512 {
+            let pgd_table_entry = pgd_table[i];
+            if !pgd_table_entry.flags().contains(ProcessPageFlags::PRESENT) {
+                continue;
+            }
+            if pgd_table_entry.flags().contains(ProcessPageFlags::COPY_ON_WRITE) {
+                continue;
+            }
+
+            let (_mapping, pud_table) = paddr_as_table!(strip_paddr!(pgd_table_entry.0));
+            for j in 0..512 {
+                let pud_table_entry = pud_table[j];
+                if !pud_table_entry.flags().contains(ProcessPageFlags::PRESENT) {
+                    continue;
+                }
+                if pgd_table_entry.flags().contains(ProcessPageFlags::COPY_ON_WRITE) {
+                    continue;
+                }
+
+                let (_mapping, pmd_table) = paddr_as_table!(strip_paddr!(pud_table_entry.0));
+                for k in 0..512 {
+                    let pmd_table_entry = pmd_table[k];
+                    if !pmd_table_entry.flags().contains(ProcessPageFlags::PRESENT) {
+                        continue;
+                    }
+                    if pgd_table_entry.flags().contains(ProcessPageFlags::COPY_ON_WRITE) {
+                        continue;
+                    }
+
+                    let (_mapping, pte_table) = paddr_as_table!(strip_paddr!(pmd_table_entry.0));
+                    'pte: for l in 0..512 {
+                        let pte_table_entry = pte_table[l];
+                        if !pte_table_entry.flags().contains(ProcessPageFlags::PRESENT) {
+                            continue;
+                        }
+                        if pgd_table_entry.flags().contains(ProcessPageFlags::COPY_ON_WRITE) {
+                            continue;
+                        }
+
+                        for addr in keep {
+                            if ProcessPageTable::index_arg(PGD, *addr) == i &&
+                                ProcessPageTable::index_arg(PUD, *addr) == j &&
+                                ProcessPageTable::index_arg(PMD, *addr) == k &&
+                                ProcessPageTable::index_arg(PTE, *addr) == l {
+                                continue 'pte;
+                            }
+                        }
+
+                        free_page(strip_paddr!(pte_table_entry.0));
+                    }
+                    free_page(strip_paddr!(pmd_table_entry.0));
+                }
+                free_page(strip_paddr!(pud_table_entry.0));
+            }
+            free_page(strip_paddr!(pgd_table_entry.0));
+        }
+        free_page(self.process_page_table);
     }
 }

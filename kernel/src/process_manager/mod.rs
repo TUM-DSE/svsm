@@ -15,6 +15,7 @@ pub mod outb;
 
 static MONITOR_INIT_STATE: ImmutAfterInitCell<bool> = ImmutAfterInitCell::new(false);
 const MONITOR_INIT_STATE_TRUE: bool = true;
+pub const PROCESS_STORE_SIZE: u32 = 128;
 
 pub fn monitor_init(){
     if *MONITOR_INIT_STATE {
@@ -23,6 +24,6 @@ pub fn monitor_init(){
     }
     set_ecryption_mask_address_size();
     let _ = additional_monitor_memory_init();
-    PROCESS_STORE.init(128);
+    PROCESS_STORE.init(PROCESS_STORE_SIZE);
     let _ = MONITOR_INIT_STATE.reinit(&MONITOR_INIT_STATE_TRUE);
 }
