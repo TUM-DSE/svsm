@@ -5,6 +5,7 @@ use core::cell::UnsafeCell;
 use alloc::vec::Vec;
 use cpuarch::vmsa::VMSASegment;
 use igvm_defs::PAGE_SIZE_4K;
+use crate::cpu::msr::rdtsc;
 use crate::locking::{RWLock, ReadLockGuard, WriteLockGuard};
 use crate::address::PhysAddr;
 use crate::cpu::percpu::this_cpu_shared;
@@ -37,6 +38,7 @@ use crate::vaddr_as_u64_slice;
 use cpuarch::vmsa::VMSA;
 use core::mem::replace;
 
+use super::process_memory::free_page;
 use super::process_paging::{TP_STACK_START_VADDR,TP_KERN_STACK_START_VADDR};
 use super::process_paging::{TP_LIBOS_START_VADDR,TP_MANIFEST_START_VADDR};
 use super::memory_channels::MemoryChannel;
@@ -771,3 +773,75 @@ impl ProcessContext {
 
 }
 
+pub fn alloc_bench() {
+    let mut pgt = ProcessPageTableRef::default();
+    pgt.init();
+
+    let t0 = 0;
+    let t1 = 0;
+    let t2 = 0;
+    let t3 = 0;
+
+    let mapping_address: u64 = 0x1000u64;
+    let page = allocate_page();
+    free_page(u64::from(page));
+
+    let mut pages: [u64;100] = [0; 100];
+
+    let mut sum1 = 0;
+    let mut t1 = 0;
+    let mut t2 = 0;
+
+    for i in 0..10 {
+        t1 = rdtsc();
+        pages[i] = u64::from(allocate_page());
+        t2 = rdtsc();
+        sum1 += t2 - t1;
+    }
+
+    let mut sum2 = 0;
+
+    for i in 0..10 {
+        t1 = rdtsc();
+        free_page(pages[i]);
+        t2 = rdtsc();
+        sum2 += t2 - t1;
+    }
+
+    let mut sum3 = 0;
+
+    for i in 0..10 {
+        t1 = rdtsc();
+        pages[i] = u64::from(allocate_page());
+        t2 = rdtsc();
+        sum3 += t2 - t1;
+    }
+    let mut sum4 = 0;
+    for i in 0..10 {
+        t1 = rdtsc();
+        let page = u64::from(allocate_page());
+        pgt.map_4k_page(VirtAddr::from(mapping_address*(i+1)), PhysAddr::from(page), ProcessPageFlags::empty());
+        t2 = rdtsc();
+        sum4 += t2 - t1;
+    }
+
+    for i in 0..100 {
+        pages[i] = u64::from(allocate_page());
+    }
+    for i in 0..100 {
+        free_page(pages[i]);
+    }
+
+    let mut sum5 = 0;
+    for i in 10..20 {
+        t1 = rdtsc();
+        let page = u64::from(allocate_page());
+        pgt.map_4k_page(VirtAddr::from(mapping_address*(i)), PhysAddr::from(page), ProcessPageFlags::empty());
+        t2 = rdtsc();
+        sum5 += t2 - t1;
+    }
+
+
+    log::info!("\nAlloc1: {}\nFree: {}\nAlloc2: {}\nMap1: {}\nMap2: {}", sum1, sum2, sum3, sum4, sum5);
+    //panic!();
+}
