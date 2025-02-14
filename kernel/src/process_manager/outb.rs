@@ -11,6 +11,7 @@ pub fn outb(value: u64) {
 }
 
 #[cfg(not(feature = "boottime"))]
+#[inline(always)]
 pub fn outb(value: u64) {
    return;
 }

@@ -1,7 +1,10 @@
 use crate::address::{PhysAddr, VirtAddr};
 use crate::cpu::control_regs::read_cr3;
+use crate::cpu::msr::rdtsc;
+use crate::debug::stacktrace::print_stack;
 use crate::locking::SpinLock;
-use crate::mm::pagetable::{get_init_pgtable_locked, PTEntry, PTEntryFlags, PageTable};
+use crate::mm::pagetable::{get_init_pgtable_locked, PTEntry, PTEntryFlags, PageTable, PageTableRef};
+use crate::process_manager::outb::outb;
 use crate::protocols::errors::SvsmReqError;
 use crate::sev::SevSnpError;
 use crate::types::PageSize;
@@ -14,10 +17,17 @@ use crate::cpu::ghcb::current_ghcb;
 use crate::sev::ghcb::PageStateChangeOp;
 use crate::mm::PerCPUPageMappingGuard;
 use crate::utils::immut_after_init::ImmutAfterInitCell;
-use crate::utils::{MemoryRegion};
+use crate::utils::MemoryRegion;
 use crate::mm::phys_to_virt;
 use crate::{paddr_as_u64_slice, map_paddr, vaddr_as_u64_slice};
 use crate::mm::memory::get_memory_region_from_map;
+
+use core::ops::Index;
+use core::ptr::replace;
+
+use super::memory_helper::ZERO_PAGE;
+
+const PREALLOCATED_SIZE: u64 = 8*524288; // 16 GiB
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -217,6 +227,16 @@ impl ProcessMemConfig{
         self.initilized = true;
     }
 
+    pub fn preallocate_memory(&mut self) {
+        log::info!("Memory Preallocation ({} Pages)", PREALLOCATED_SIZE);
+        let page_count = PREALLOCATED_SIZE;
+        for i in 0..page_count {
+            let p = self.get_next_page();
+            self.free_page(u64::from(p));
+        }
+    }
+
+
     fn check_for_free_page(&mut self) -> PhysAddr {
         if self.free_page_list_used_len == 0 {
             return PhysAddr::null();
@@ -227,6 +247,35 @@ impl ProcessMemConfig{
         let tmp = *entry;
         *entry = PhysAddr::null();
         tmp
+    }
+
+    pub fn prepare_free_pages(&mut self, size: u64) -> PhysAddr {
+        for i in 0..size {
+            let addr = PhysAddr::from(self.page_base);
+            ProcessMemConfig::validate_and_clear(u64::from(addr));
+            self.page_base = self.page_base + PAGE_SIZE;
+
+        }
+        PhysAddr::null()
+    }
+
+    pub fn free_page(&mut self, paddr: u64) {
+        let (map_, s) = paddr_as_u64_slice!(PhysAddr::from(paddr));
+        _ = unsafe {replace(s, ZERO_PAGE)};
+        let idx = self.free_page_list_used_len as u64;
+        let addr = self.free_page_list + (idx * 8);
+        let ptr = addr as *mut u64;
+        let r: &mut u64 = unsafe{&mut *ptr};
+        *r = paddr;
+        self.free_page_list_used_len += 1;
+
+    }
+    #[inline]
+    pub fn get_next_page(&mut self) -> PhysAddr {
+        let addr = PhysAddr::from(self.page_base);
+        ProcessMemConfig::validate_and_clear(u64::from(addr));
+        self.page_base = self.page_base + PAGE_SIZE;
+        return addr;
     }
 
     pub fn get_free_page(&mut self) -> PhysAddr {
@@ -259,9 +308,18 @@ impl ProcessMemConfig{
     }
 }
 
+pub fn preallocate_memory() {
+    PROCESS_MEM_CONFIG.lock().preallocate_memory()
+}
+
 pub fn allocate_page() -> PhysAddr {
     PROCESS_MEM_CONFIG.lock().get_free_page()
 }
+
+pub fn free_page(paddr: u64) {
+    PROCESS_MEM_CONFIG.lock().free_page(paddr);
+}
+
 
 pub fn additional_monitor_memory_init() -> Result<(), SvsmError> {
     PROCESS_MEM_CONFIG.lock().init();

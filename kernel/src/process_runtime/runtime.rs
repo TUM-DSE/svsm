@@ -9,6 +9,7 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use num_enum::TryFromPrimitive;
 use crate::address::PhysAddr;
+use crate::cpu::msr::rdtsc;
 use crate::process_manager::process_paging::{ProcessTableLevelMapping, TP_LIBOS_START_VADDR};
 use crate::{address::VirtAddr, cpu::{cpuid::{cpuid_table_raw, CpuidResult}, percpu::{this_cpu, this_cpu_unsafe}}, map_paddr, mm::{PerCPUPageMappingGuard, PAGE_SIZE}, paddr_as_slice, process_manager::{process::{ProcessID, TrustedProcess, PROCESS_STORE}, process_memory::allocate_page, process_paging::{GraminePalProtFlags, ProcessPageFlags, ProcessPageTableRef}}, protocols::{errors::SvsmReqError, RequestParams}, vaddr_as_u64_slice};
 use crate::process_manager::process_paging::ProcessPageTablePage;
@@ -28,6 +29,7 @@ const TRUSTLET_VMPL: u64 = 1;
 pub trait ProcessRuntime {
     fn handle_process_request(&mut self) -> bool;
     fn pal_svsm_virt_alloc(&mut self) -> bool;
+    fn pal_svsm_virt_free(&mut self) -> bool;
     fn pal_svsm_debug_print(&mut self) -> bool;
     fn pal_svsm_fail(&mut self) -> bool;
     fn pal_svsm_exit(&mut self) -> bool;
@@ -44,6 +46,7 @@ pub trait ProcessRuntime {
     fn pal_svsm_call_outb_with_value(&mut self) -> bool;
     fn pal_svsm_call_exit(&mut self) -> bool;
     fn pal_svsm_inflate_channel(&mut self) -> bool;
+    fn pal_nop(&mut self) -> bool;
 }
 
 /// Invocation type of invokeTrustlet
@@ -388,6 +391,12 @@ impl ProcessRuntime for PALContext  {
             0x4FFFFFF7 => {
                 return self.pal_svsm_guest_request();
             }
+            0x4FFFFFF6 => {
+                return self.pal_svsm_virt_free();
+            }
+            0x4FFFFFF5 => {
+                return self.pal_nop();
+            }
             // monitor calls (other)
             0x4EFFFFFF => {
                 return self.handle_exception();
@@ -430,6 +439,10 @@ impl ProcessRuntime for PALContext  {
 
         }
        
+    }
+
+    fn pal_nop(&mut self) -> bool {
+        return true;
     }
 
     fn pal_svsm_call_exit(&mut self) -> bool {
@@ -512,8 +525,36 @@ impl ProcessRuntime for PALContext  {
         false
     }
 
+    /// Free virtual memory in the trustlet's page table
+    ///
+    /// Register arguments:
+    /// * rax: monitor call code ()
+    /// * rbx: trustlet's virtual address to free
+    /// *
+    fn pal_svsm_virt_free(&mut self) -> bool {
+        //log::info!("FREE");
+        let page_table = self.vmsa.cr3;
+        let mut page_table_ref = ProcessPageTableRef::default();
+        page_table_ref.set_external_table(page_table);
 
+        let addr = self.vmsa.rbx;
+        let size = self.vmsa.rcx;
 
+        //TODO: Check if Address can used
+
+        if size % 4096 != 0 {
+            self.vmsa.rcx = u64::from_ne_bytes((-1i64).to_ne_bytes());
+            return true;
+        }
+
+        if addr % 4096 != 0 {
+            self.vmsa.rcx = u64::from_ne_bytes((-1i64).to_ne_bytes());
+            return true;
+        }
+        page_table_ref.remove_pages(VirtAddr::from(addr), size / 4096);
+
+        return true;
+    }
 
     /// Allocate virtual memory in the trustlet's page table
     /// 
@@ -548,7 +589,7 @@ impl ProcessRuntime for PALContext  {
             return true;
         }
         let mut page_flags = ProcessPageFlags::data();
-        if flags & GraminePalProtFlags::WRITE.bits() != 0{
+        if flags & GraminePalProtFlags::WRITE.bits() != 0 {
             page_flags = page_flags | ProcessPageFlags::WRITABLE;
         }
         /*
@@ -558,13 +599,12 @@ impl ProcessRuntime for PALContext  {
             page_flags = page_flags & !ProcessPageFlags::WRITABLE;
         }
         */
-        if flags & GraminePalProtFlags::EXEC.bits() != 0{
+        if flags & GraminePalProtFlags::EXEC.bits() != 0 {
             page_flags = page_flags & !ProcessPageFlags::NO_EXECUTE;
         }
-        //log::info!("Trying to allocate: {:#?}, {} {:?}", addr, size,page_flags);
+
         page_table_ref.add_pages(VirtAddr::from(addr), size / 4096, page_flags);
 
-        //log::info!("Allocated Memory");
         self.vmsa.rcx = u64::from_ne_bytes((0i64).to_ne_bytes());
 
         true

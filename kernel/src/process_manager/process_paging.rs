@@ -1,4 +1,4 @@
-use crate::{address::{Address, PhysAddr, VirtAddr}, paddr_as_table, process_manager::process_memory::allocate_page, sev::{rmp_adjust, RMPFlags}};
+use crate::{address::{Address, PhysAddr, VirtAddr}, cpu::msr::rdtsc, paddr_as_table, process_manager::process_memory::allocate_page, sev::{rmp_adjust, RMPFlags}};
 use crate::{paddr_as_slice, paddr_as_u64_slice, vaddr_as_u64_slice, vaddr_as_slice, map_paddr, strip_paddr};
 use crate::process_manager::memory_helper::{strip_c_bit, set_c_bit_in_address};
 use crate::mm::PerCPUPageMappingGuard;
@@ -320,6 +320,12 @@ impl ProcessPageTableRef {
             rmp_adjust(mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
         }
     }
+
+    pub fn remove_pages(&self, start: VirtAddr, size: u64){
+        for i in 0..(size as usize) {
+        }
+    }
+
 
     pub fn add_stack(&self, start: VirtAddr, size: u64){
         for i in 0..(size as usize) {

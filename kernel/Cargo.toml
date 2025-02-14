@@ -50,6 +50,8 @@ default-test = []
 enable-gdb = ["dep:gdbstub", "dep:gdbstub_arch"]
 mstpm = ["dep:libmstpm"]
 boottime = []
+alloc_bench = []
+prealloc = []
 no_print = ["log/max_level_error"]
 print = ["log/max_level_info"]
 
