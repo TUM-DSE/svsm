@@ -841,7 +841,41 @@ pub fn alloc_bench() {
         sum5 += t2 - t1;
     }
 
-
     log::info!("\nAlloc1: {}\nFree: {}\nAlloc2: {}\nMap1: {}\nMap2: {}", sum1, sum2, sum3, sum4, sum5);
-    //panic!();
+
+    test_rmp_adjust();
+
+    panic!();
+}
+
+fn test_rmp_adjust() {
+    let mut t1 = 0;
+    let mut t2 = 0;
+    let mut pages: [u64;10] = [0; 10];
+
+    let mut sum1 = 0;
+
+    for i in 0..10 {
+        pages[i] = u64::from(allocate_page());
+        let mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(pages[i])).unwrap();
+        let vaddr = mapping.virt_addr();
+        t1 = rdtsc();
+        rmp_adjust(vaddr, RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular);
+        t2 = rdtsc();
+        sum1 += t2 - t1;
+    }
+    sum1 = sum1;
+
+    let mut sum2 = 0;
+
+    for i in 0..10 {
+        t1 = rdtsc();
+        let mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(pages[i])).unwrap();
+        let vaddr = mapping.virt_addr();
+        rmp_adjust(vaddr, RMPFlags::VMPL1 | RMPFlags::NONE, PageSize::Regular);
+        t2 = rdtsc();
+        sum2 += t2 - t1;
+    }
+
+    log::info!("Add access: {}\nRemove access: {}", sum1, sum2);
 }
