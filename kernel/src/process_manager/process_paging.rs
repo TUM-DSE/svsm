@@ -10,7 +10,7 @@ use core::ops::{Index, IndexMut};
 use core::slice;
 use core::mem::replace;
 use crate::types::PageSize;
-use super::process_memory::{ALLOCATION_RANGE_VIRT_START, PGD, PMD, PTE, PUD};
+use super::process_memory::{free_page, ALLOCATION_RANGE_VIRT_START, PGD, PMD, PTE, PUD};
 use crate::process_manager::allocation::AllocationRange;
 use core::ffi::CStr;
 use super::memory_helper::{ZERO_PAGE};
@@ -322,7 +322,28 @@ impl ProcessPageTableRef {
     }
 
     pub fn remove_pages(&self, start: VirtAddr, size: u64){
-        for i in 0..(size as usize) {
+        let mut count = 0;
+        let mut current = start;
+
+        let null = ProcessPageTableEntry(PhysAddr::null());
+
+        while count < size {
+            let (_mapping_pgd, pgd_table) = paddr_as_table!(self.process_page_table);
+            let pgd_idx = ProcessPageTable::index::<PGD>(current);
+            let (_mapping_pud, pud_table) = paddr_as_table!(strip_paddr!(pgd_table[pgd_idx].0));
+            let pud_idx = ProcessPageTable::index::<PUD>(current);
+            let (_mapping_pmd, pmd_table) = paddr_as_table!(strip_paddr!(pud_table[pud_idx].0));
+            let pmd_idx = ProcessPageTable::index::<PMD>(current);
+            let (_mapping_pte, pte_table) = paddr_as_table!(strip_paddr!(pmd_table[pmd_idx].0));
+
+            let mut pte_idx = ProcessPageTable::index::<PTE>(start);
+            for i in count..size {
+                let page = strip_paddr!(pte_table[pte_idx].0);
+                free_page(u64::from(page));
+                pte_table[pte_idx] = null;
+                pte_idx += 1;
+                count += 1;
+            }
         }
     }
 
