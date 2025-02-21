@@ -326,24 +326,49 @@ impl ProcessPageTableRef {
         let mut current = start;
 
         let null = ProcessPageTableEntry(PhysAddr::null());
+        let mut _mapping_pgd: PerCPUPageMappingGuard;
+        let mut _mapping_pud: PerCPUPageMappingGuard;
+        let mut _mapping_pmd: PerCPUPageMappingGuard;
+        let mut _mapping_pte: PerCPUPageMappingGuard;
+
+        let mut pgd_table: &mut ProcessPageTablePage;
+        let mut pud_table: &mut ProcessPageTablePage;
+        let mut pmd_table: &mut ProcessPageTablePage;
+        let mut pte_table: &mut ProcessPageTablePage;
+
+        let mut pgd_idx: usize;
+        let mut pud_idx: usize;
+        let mut pmd_idx: usize;
+
+        (_mapping_pgd, pgd_table) = paddr_as_table!(self.process_page_table);
+        pgd_idx = ProcessPageTable::index::<PGD>(current);
+        (_mapping_pud, pud_table) = paddr_as_table!(strip_paddr!(pgd_table[pgd_idx].0));
+        pud_idx = ProcessPageTable::index::<PUD>(current);
+        (_mapping_pmd, pmd_table) = paddr_as_table!(strip_paddr!(pud_table[pud_idx].0));
+        pmd_idx = ProcessPageTable::index::<PMD>(current);
+        (_mapping_pte, pte_table) = paddr_as_table!(strip_paddr!(pmd_table[pmd_idx].0));
 
         while count < size {
-            let (_mapping_pgd, pgd_table) = paddr_as_table!(self.process_page_table);
-            let pgd_idx = ProcessPageTable::index::<PGD>(current);
-            let (_mapping_pud, pud_table) = paddr_as_table!(strip_paddr!(pgd_table[pgd_idx].0));
-            let pud_idx = ProcessPageTable::index::<PUD>(current);
-            let (_mapping_pmd, pmd_table) = paddr_as_table!(strip_paddr!(pud_table[pud_idx].0));
-            let pmd_idx = ProcessPageTable::index::<PMD>(current);
-            let (_mapping_pte, pte_table) = paddr_as_table!(strip_paddr!(pmd_table[pmd_idx].0));
+            let mut pte_idx = ProcessPageTable::index::<PTE>(current);
+            let page = strip_paddr!(pte_table[pte_idx].0);
+            free_page(u64::from(page));
+            pte_table[pte_idx] = null;
+            count += 1;
+            current = current + PAGE_SIZE;
 
-            let mut pte_idx = ProcessPageTable::index::<PTE>(start);
-            for i in count..size {
-                let page = strip_paddr!(pte_table[pte_idx].0);
-                free_page(u64::from(page));
-                pte_table[pte_idx] = null;
-                pte_idx += 1;
-                count += 1;
-            }
+            if pte_idx == 511 && count < size {
+                if pmd_idx == 511 {
+                   if pud_idx == 511 {
+                       pgd_idx = ProcessPageTable::index::<PGD>(current);
+                       (_mapping_pud, pud_table) = paddr_as_table!(strip_paddr!(pgd_table[pgd_idx].0));
+                   }
+                    pud_idx = ProcessPageTable::index::<PUD>(current);
+                    (_mapping_pmd, pmd_table) = paddr_as_table!(strip_paddr!(pud_table[pud_idx].0));
+                }
+                pmd_idx = ProcessPageTable::index::<PMD>(current);
+                (_mapping_pte, pte_table) = paddr_as_table!(strip_paddr!(pmd_table[pmd_idx].0));
+            } 
+
         }
     }
 
