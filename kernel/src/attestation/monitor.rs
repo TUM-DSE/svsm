@@ -296,7 +296,7 @@ fn function_report(params: &mut RequestParams) -> Result<(), SvsmReqError>{
     let guest_pgt = params.r8;
     let size = PAGE_SIZE;
     let function_data_addr = params.r9;
-    let (function_data, _) = ProcessPageTableRef::copy_data_from_guest(function_data_addr, (size).try_into().unwrap(), guest_pgt);
+    let (function_data, allocation) = ProcessPageTableRef::copy_data_from_guest(function_data_addr, (size).try_into().unwrap(), guest_pgt);
 
     // Extract the parameters from the struct
     let function_data_struct = vaddr_as_u64_slice!(function_data);
@@ -306,6 +306,9 @@ fn function_report(params: &mut RequestParams) -> Result<(), SvsmReqError>{
     let fn_output_size = function_data_struct[3];
     let fn_output_addr = function_data_struct[4];
     log::debug!("Extracted values { } { } { } { } { }", trustlet_id, fn_input_size, fn_input_addr, fn_output_size, fn_output_addr);
+
+    allocation.unmount();
+    allocation.delete();
 
     // Get the parent process of the function
     let trustlet_id = ProcessID(trustlet_id as usize);
@@ -317,12 +320,16 @@ fn function_report(params: &mut RequestParams) -> Result<(), SvsmReqError>{
     let function_measurement = trustlet.measurements.function_measurement;
 
     // Get and measure the input data of the function
-    let (input_data, _) = ProcessPageTableRef::copy_data_from_guest(fn_input_addr, fn_input_size, guest_pgt);
+    let (input_data, allocation) = ProcessPageTableRef::copy_data_from_guest(fn_input_addr, fn_input_size, guest_pgt);
     let input_hash = measure(input_data.into(), fn_input_size);
+    allocation.unmount();
+    allocation.delete();
 
     // Get and measure the output data of the function
-    let (output_data, _) = ProcessPageTableRef::copy_data_from_guest(fn_output_addr, fn_output_size, guest_pgt);
+    let (output_data, allocation) = ProcessPageTableRef::copy_data_from_guest(fn_output_addr, fn_output_size, guest_pgt);
     let output_hash = measure(output_data.into(), fn_output_size);
+    allocation.unmount();
+    allocation.delete();
 
     // Construct the new report
     let mut new_report: Vec<u8> = Vec::new();

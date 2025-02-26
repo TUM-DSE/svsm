@@ -1,14 +1,15 @@
 use crate::cpu::flush_tlb_global;
-use crate::process_manager::process_memory::allocate_page;
+use crate::process_manager::process_memory::{allocate_page, free_page};
 use crate::mm::PAGE_SIZE;
-use crate::address::{Address, VirtAddr};
-use crate::process_manager::process_paging::ProcessPageTableRef;
+use crate::address::{Address, PhysAddr, VirtAddr};
+use crate::process_manager::process_paging::{ProcessPageTableEntry, ProcessPageTablePage, ProcessPageTableRef};
 use crate::process_manager::process_paging::ProcessPageFlags;
 use super::process_memory::{ALLOCATION_RANGE_VIRT_START, PGD};
 use crate::cpu::control_regs::read_cr3;
 use crate::sev::{rmp_adjust, RMPFlags};
 use crate::types::PageSize;
-use crate::{paddr_as_slice, map_paddr, vaddr_as_slice};
+use crate::{paddr_as_slice, map_paddr, vaddr_as_slice, paddr_as_table, strip_paddr};
+use crate::process_manager::memory_helper::strip_c_bit;
 use crate::mm::PerCPUPageMappingGuard;
 
 const ALLOCATION_VADDR_START: u64 = 0x30000000000u64;
@@ -109,8 +110,35 @@ impl AllocationRange {
         pgd[loc] = t;
     }
 
-    pub fn delete(&self) {
+    pub fn delete(self) {
+        let pgd_table_entry = ProcessPageTableEntry(PhysAddr::from(self.0));
+        let (_mapping, pud_table) = paddr_as_table!(strip_paddr!(pgd_table_entry.0));
+        for i in 0..512 {
+            let pud_table_entry = pud_table[i];
+            if !pud_table_entry.flags().contains(ProcessPageFlags::PRESENT) {
+                break
+            }
 
+            let (_mapping, pmd_table) = paddr_as_table!(strip_paddr!(pud_table_entry.0));
+            for i in 0..512 {
+                let pmd_table_entry = pmd_table[i];
+                if !pmd_table_entry.flags().contains(ProcessPageFlags::PRESENT) {
+                    break
+                }
+
+                let (_mapping, pte_table) = paddr_as_table!(strip_paddr!(pmd_table_entry.0));
+                for i in 0..512 {
+                    let pte_table_entry = pte_table[i];
+                    if !pte_table_entry.flags().contains(ProcessPageFlags::PRESENT) {
+                        break
+                    }
+
+                    free_page(strip_paddr!(pte_table_entry.0));
+                }
+                free_page(strip_paddr!(pmd_table_entry.0));
+            }
+            free_page(strip_paddr!(pud_table_entry.0));
+        }
+        free_page(strip_paddr!(pgd_table_entry.0));
     }
-
 }

@@ -17,11 +17,14 @@ use crate::cpu::control_regs::read_cr3;
 use crate::mm::PAGE_SIZE;
 use crate::mm::pagetable::PageTableRef;
 use crate::mm::SVSM_PERCPU_VMSA_BASE;
-use crate::process_manager::process_memory::allocate_page;
+use crate::process_manager::process_memory;
+use crate::process_manager::PROCESS_STORE_SIZE;
+use crate::process_manager::process_memory::{allocate_page, free_page, ALLOCATION_RANGE_VIRT_START};
 use crate::process_manager::allocation::AllocationRange;
-use crate::process_manager::process_paging::ProcessPageTableRef;
+use crate::process_manager::process_paging::{ProcessPageTableEntry, ProcessPageTableRef};
 use crate::process_manager::process_paging::ProcessPageFlags;
 use crate::process_runtime::runtime::MmapManager;
+use crate::protocols::errors::SvsmResultCode;
 use crate::protocols::errors::SvsmReqError;
 use crate::protocols::RequestParams;
 use crate::sev::RMPFlags;
@@ -79,7 +82,7 @@ impl TrustedProcessStore {
             processes: UnsafeCell::new(Vec::new()),
         }
     }
-    pub fn push(&self, process: TrustedProcess){
+    fn push(&self, process: TrustedProcess) {
         let ptr: &mut Vec<TrustedProcess> = unsafe { self.processes.get().as_mut().unwrap() };
         ptr.push(process);
     }
@@ -108,6 +111,10 @@ impl TrustedProcessStore {
         &mut ptr[pid.0]
     }
 
+    pub fn delete(&self, pid: ProcessID) {
+        let ptr: &mut Vec<TrustedProcess> = unsafe { self.processes.get().as_mut().unwrap() };
+        ptr[pid.0] = TrustedProcess::empty();
+    }
 }
 
 #[derive(Clone,Copy,Debug)]
@@ -155,6 +162,9 @@ impl TrustedProcess {
         let libos = zygote_data_struct[2];
         let libos_size= zygote_data_struct[5];
 
+        range.unmount();
+        range.delete();
+
 
         // The allocation (AllocationRange) is always starting at the same virtual address which is why only one allocaiton is valid
         // at the same time. TODO: Allow for different start addresses
@@ -166,6 +176,7 @@ impl TrustedProcess {
         base.init_with_data(pal_data, pal_size, pal_range);
         measurements.init_measurement = measure(pal_data.into(), pal_size);
         pal_range.unmount();
+        pal_range.delete();
         log::debug!("TODO: Compare with pal measurement of the policy");
 
         let (manifest_data, manifest_range) = ProcessPageTableRef::copy_data_from_guest(manifest, manifest_size, pgt);
@@ -173,6 +184,7 @@ impl TrustedProcess {
         base.add_manifest(manifest_data, manifest_size, manifest_range);
         measurements.manifest_measurement = measure(manifest_data.into(), manifest_size);
         manifest_range.unmount();
+        manifest_range.delete();
         log::debug!("TODO: Compare with manifest measurement of the policy");
 
         let (libos_data, libos_range) = ProcessPageTableRef::copy_data_from_guest(libos, libos_size, pgt);
@@ -180,9 +192,9 @@ impl TrustedProcess {
         base.add_libos(libos_data, libos_size, libos_range);
         measurements.libos_measurement = measure(libos_data.into(), libos_size);
         libos_range.unmount();
+        libos_range.delete();
         log::debug!("TODO: Compare with libos measurement of the policy");
 
-        // TODO: Free zygote data
         Self {
             process_type: TrustedProcessType::Zygote,
             id: 0,
@@ -230,7 +242,8 @@ impl TrustedProcess {
             log::debug!("Adding trustlet function");
             let size = (4096 - (size & 0xFFF)) + size;
             trustlet.context.page_table_ref.add_function(function_code, size);
-            // function_code_range.delete();
+            function_code_range.unmount();
+            function_code_range.delete();
         }
         trustlet
     }
@@ -247,11 +260,30 @@ impl TrustedProcess {
             pf_target_vaddr: 0,
         }
     }
+}
 
-    pub fn delete(&self) -> bool {
-        true
+impl Drop for TrustedProcess {
+    fn drop(&mut self) {
+        match self.process_type {
+            TrustedProcessType::Undefined => {}
+            TrustedProcessType::Zygote => {
+                self.base.page_table_ref.delete(&[]);
+                // self.context is empty for zygotes
+            }
+            TrustedProcessType::Trustlet => {
+                // do not delete self.base as this belongs to the zygote
+                self.context.page_table_ref.delete(&[
+                    idt_trustlet().base_limit().0.into(),
+                    (asm_entry_trustlet_pf as u64).into(),
+                    unsafe { &gdt_desc as *const u8 as u64 }.into(),
+                    tss_trustlet().base().into(),
+                    gdt_trustlet().base_limit().0.into()
+                ]); // nothing else for now
+                free_page(self.context.vmsa);
+                // input and output channels are deleted as part of page_table_ref
+            }
+        }
     }
-
 }
 
 pub fn check_vmsa_ind(new: &VMSA, sev_features: u64, svme_mask: u64, vmpl_level: u64) -> bool {
@@ -265,6 +297,8 @@ pub fn create_trusted_process(params: &mut RequestParams, t: TrustedProcessType)
     let size = params.rcx;
     let process_addr = params.rdx;
     let guest_pgt = params.r8;
+
+    log::info!("allocated memory before creation: {}", process_memory::allocated_amount());
 
     match t {
         TrustedProcessType::Undefined => panic!("Invalid Creation Request"),
@@ -289,6 +323,7 @@ pub fn create_trusted_process(params: &mut RequestParams, t: TrustedProcessType)
             params.rcx = u64::from_ne_bytes(res.to_ne_bytes());
            
             log::debug!("Created Zygote #{}", params.rcx);
+            log::info!("allocated memory after zygote creation: {}", process_memory::allocated_amount());
             Ok(())
         },
         TrustedProcessType::Trustlet => {
@@ -310,6 +345,8 @@ pub fn create_trusted_process(params: &mut RequestParams, t: TrustedProcessType)
 
             let res = PROCESS_STORE.insert(trustlet);
             params.rcx = u64::from_ne_bytes(res.to_ne_bytes());
+
+            log::info!("allocated memory after trustlet creation: {}", process_memory::allocated_amount());
             Ok(())
 
         },
@@ -327,7 +364,24 @@ pub fn append_trusted_process(_params: &mut RequestParams) -> Result<(), SvsmReq
 pub fn delete_trusted_process(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let process_id = ProcessID(params.rcx as usize);
     let process = PROCESS_STORE.get(process_id);
-    process.delete();
+
+    if process.process_type == TrustedProcessType::Zygote {
+        for i in 0..PROCESS_STORE_SIZE {
+            if i as usize == process_id.0 {
+                continue;
+            }
+            let process = PROCESS_STORE.get(ProcessID(i as usize));
+            if process.process_type == TrustedProcessType::Trustlet {
+                if process.parent_id as usize == process_id.0 {
+                    return Err(SvsmReqError::RequestError(SvsmResultCode::INVALID_PARAMETER));
+                }
+            }
+        }
+    }
+
+    log::info!("allocated memory before deletion of {}: {}", process_id.0, process_memory::allocated_amount());
+    PROCESS_STORE.delete(process_id);
+    log::info!("allocated memory after deletion: {}", process_memory::allocated_amount());
     Ok(())
 }
 
