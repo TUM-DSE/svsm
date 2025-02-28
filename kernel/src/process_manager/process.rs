@@ -41,7 +41,6 @@ use crate::vaddr_as_u64_slice;
 use cpuarch::vmsa::VMSA;
 use core::mem::replace;
 
-use super::process_memory::free_page;
 use super::process_paging::{TP_STACK_START_VADDR,TP_KERN_STACK_START_VADDR};
 use super::process_paging::{TP_LIBOS_START_VADDR,TP_MANIFEST_START_VADDR};
 use super::memory_channels::MemoryChannel;
@@ -838,7 +837,7 @@ pub fn alloc_bench() {
 
     let mapping_address: u64 = 0x1000u64;
     let page = allocate_page();
-    free_page(u64::from(page));
+    free_page(u64::from(page).into());
 
     let mut pages: [u64;100] = [0; 100];
 
@@ -857,7 +856,7 @@ pub fn alloc_bench() {
 
     for i in 0..10 {
         t1 = rdtsc();
-        free_page(pages[i]);
+        free_page(pages[i].into());
         t2 = rdtsc();
         sum2 += t2 - t1;
     }
@@ -883,7 +882,7 @@ pub fn alloc_bench() {
         pages[i] = u64::from(allocate_page());
     }
     for i in 0..100 {
-        free_page(pages[i]);
+        free_page(pages[i].into());
     }
 
     let mut sum5 = 0;

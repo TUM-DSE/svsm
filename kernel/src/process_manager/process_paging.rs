@@ -359,7 +359,7 @@ impl ProcessPageTableRef {
         while count < size {
             let mut pte_idx = ProcessPageTable::index::<PTE>(current);
             let page = strip_paddr!(pte_table[pte_idx].0);
-            free_page(u64::from(page));
+            free_page(u64::from(page).into());
             pte_table[pte_idx] = null;
             count += 1;
             current = current + PAGE_SIZE;
