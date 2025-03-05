@@ -47,6 +47,7 @@ pub trait ProcessRuntime {
     fn pal_svsm_call_exit(&mut self) -> bool;
     fn pal_svsm_inflate_channel(&mut self) -> bool;
     fn pal_nop(&mut self) -> bool;
+    fn pal_svsm_finalize(&mut self) -> bool;
 }
 
 /// Invocation type of invokeTrustlet
@@ -185,8 +186,8 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let invocation_arg_guest_vaddr = invoke_data_struct[5];
     let invocation_arg_size = invoke_data_struct[6] as usize;
 
-    range.unmount();
-    range.delete();
+    //range.unmount();
+    //range.delete();
 
     let trustlet = PROCESS_STORE.get(ProcessID(id.try_into().unwrap()));
 
@@ -400,6 +401,9 @@ impl ProcessRuntime for PALContext  {
             0x4FFFFFF5 => {
                 return self.pal_nop();
             }
+            0x4FFFFFF4 => {
+                return self.pal_svsm_finalize();
+            }
             // monitor calls (other)
             0x4EFFFFFF => {
                 return self.handle_exception();
@@ -442,6 +446,18 @@ impl ProcessRuntime for PALContext  {
 
         }
        
+    }
+
+    fn pal_svsm_finalize(&mut self) -> bool {
+        //Finalize should mark every current page as finalizsed, e.g. read only
+        let page_table = self.vmsa.cr3;
+        let mut page_table_ref = ProcessPageTableRef::default();
+        page_table_ref.set_external_table(page_table);
+        page_table_ref.finalize_pages();
+        let rip = self.vmsa.rip;
+        log::info!("RIP: {:#x?}",rip);
+        log::info!("Fin done");
+        return true;
     }
 
     fn pal_nop(&mut self) -> bool {
@@ -702,6 +718,7 @@ impl ProcessRuntime for PALContext  {
     /// Return:
     /// * rcx: 0 on success, -1 on failure
     fn pal_svsm_map(&mut self) -> bool {
+        log::error!("Test");
         let addr = self.vmsa.rbx;
         let size = self.vmsa.rcx;
         let flags = self.vmsa.rdx;
@@ -733,7 +750,7 @@ impl ProcessRuntime for PALContext  {
             flags |= ProcessPageFlags::WRITABLE;
         }
         if writecopy {
-            flags |= ProcessPageFlags::COPY_ON_WRITE;
+            //flags |= ProcessPageFlags::COPY_ON_WRITE;
             flags &= !ProcessPageFlags::WRITABLE;
         }
         if !executable {
