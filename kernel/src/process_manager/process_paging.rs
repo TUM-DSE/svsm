@@ -358,14 +358,22 @@ impl ProcessPageTableRef {
 
         (_mapping_pgd, pgd_table) = paddr_as_table!(self.process_page_table);
         log::info!("Start finilaizing");
-        while pgd_idx < 1 {
+        pgd_idx = 0;
+        while pgd_idx < 512 {
+
+            //Memory channels
+            if pgd_idx == 5 {
+                pgd_idx += 2;
+                continue;
+            }
+
             let pud = pgd_table[pgd_idx];
             //log::info!(" {:?} {} {} {} {}", pud, pgd_idx, pud_idx, pmd_idx, pte_idx);
             if strip_paddr!(pud.0) == null {
                 pgd_idx += 1;
                 continue;
             } else {
-                let page = PhysAddr::from((u64::from(pud.0) | ProcessPageFlags::COPY_ON_WRITE.bits()) & !ProcessPageFlags::WRITABLE.bits());
+                let page = PhysAddr::from((u64::from(pud.0) | ProcessPageFlags::COPY_ON_WRITE.bits()) | ProcessPageFlags::WRITABLE.bits());
                 pgd_table[pgd_idx] = ProcessPageTableEntry(page);
                 (_mapping_pud, pud_table) = paddr_as_table!(strip_paddr!(pud.0));
             }
@@ -377,7 +385,7 @@ impl ProcessPageTableRef {
                     pud_idx += 1;
                     continue;
                 } else {
-                    let page = PhysAddr::from((u64::from(pmd.0) | ProcessPageFlags::COPY_ON_WRITE.bits()) & !ProcessPageFlags::WRITABLE.bits());
+                    let page = PhysAddr::from((u64::from(pmd.0) | ProcessPageFlags::COPY_ON_WRITE.bits()) | ProcessPageFlags::WRITABLE.bits());
                     pud_table[pud_idx] = ProcessPageTableEntry(page);
                     (_mapping_pmd, pmd_table) = paddr_as_table!(strip_paddr!(pmd.0));
                 }
@@ -389,7 +397,7 @@ impl ProcessPageTableRef {
                         pmd_idx += 1;
                         continue;
                     } else {
-                        let page = PhysAddr::from((u64::from(pte.0) | ProcessPageFlags::COPY_ON_WRITE.bits()) & !ProcessPageFlags::WRITABLE.bits());
+                        let page = PhysAddr::from((u64::from(pte.0) | ProcessPageFlags::COPY_ON_WRITE.bits()) | ProcessPageFlags::WRITABLE.bits());
                         pmd_table[pmd_idx] = ProcessPageTableEntry(page);
                         (_mapping_pte, pte_table) = paddr_as_table!(strip_paddr!(pte.0));
                     }
@@ -405,12 +413,15 @@ impl ProcessPageTableRef {
                                 log::warn!("Page found");
                             }
 
-
+                            let v = (pgd_idx << (9*3 +12)) + (pud_idx << (9*2 +12)) + (pmd_idx <<(9*1 +12)) + (pte_idx << 12);
+                            log::info!("Virt Address: {:#x}",v);
                             log::info!("Page Before: {:#x?}", page);
                             let page = PhysAddr::from((u64::from(page.0) | ProcessPageFlags::COPY_ON_WRITE.bits()) & !ProcessPageFlags::WRITABLE.bits());
                             log::info!("Page After: {:#x?}", page);
                             log::info!("{:#x?}", strip_paddr!(page));
-                            pte_table[pte_idx] = ProcessPageTableEntry(page);
+                            if !(pgd_idx == 1 && pud_idx == 64 ) {
+                                pte_table[pte_idx] = ProcessPageTableEntry(page);
+                            }
                         }
                         pte_idx += 1;
                     }
@@ -899,7 +910,7 @@ impl ProcessPageTableRef {
         let (_pgd_mapping, pgd_table) = paddr_as_table!(self.process_page_table);
         let current_mapping = self.page_walk(&pgd_table, self.process_page_table, addr);
 
-        // log::info!("[handle_cow] current_mapping: {:?}", current_mapping);
+        log::info!("[handle_cow] current_mapping: {:#x?}", current_mapping);
 
         match current_mapping {
             ProcessTableLevelMapping::PTE(table_phys, index) => {

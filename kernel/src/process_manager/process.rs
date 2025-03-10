@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use core::arch::global_asm;
+//use core::arch::global_asm;
 use core::cell::UnsafeCell;
 use alloc::vec::Vec;
 use cpuarch::vmsa::VMSASegment;
@@ -45,6 +45,9 @@ use super::process_paging::{TP_STACK_START_VADDR,TP_KERN_STACK_START_VADDR};
 use super::process_paging::{TP_LIBOS_START_VADDR,TP_MANIFEST_START_VADDR};
 use super::memory_channels::MemoryChannel;
 use crate::attestation::monitor::{ProcessMeasurements, measure};
+
+use super::exception_handling::*;
+
 
 trait FromVAddr {
     fn from_virt_addr(v: VirtAddr) -> &'static mut VMSA;
@@ -165,8 +168,6 @@ impl TrustedProcess {
         range.delete();
 
 
-        // The allocation (AllocationRange) is always starting at the same virtual address which is why only one allocaiton is valid
-        // at the same time. TODO: Allow for different start addresses
         let mut base = ProcessBaseContext::default();
         let mut measurements = ProcessMeasurements::default();
 
@@ -309,11 +310,19 @@ pub fn create_trusted_process(params: &mut RequestParams, t: TrustedProcessType)
             // e.g. Copy the Zygote into memory
             // and parse it to create a page table
             let z: TrustedProcess = TrustedProcess::zygote(process_addr, size, guest_pgt);
+            let base = &mut z.base;
+            let measurements: ProcessMeasurements = z.measurements;
+            let mut context = ProcessContext::default();
+            context.early_init(base, measurements);
+
+
 
             // Insert it into the process store
             // Each process is identified with an idea from
             // the store
             let res = PROCESS_STORE.insert(z);
+
+
 
             // Copy the value to the return register
             // Conversion is required because the store
@@ -486,120 +495,74 @@ impl Default for ProcessContext {
     }
 }
 
-// FIXME: Allocarte the GDT, IDT, and TSS in a dedicated page
-/// GDT for Trustlets (shared between all Trustlets)
-static GDT_TRUSTLET: RWLock<GDT> = RWLock::new(GDT::new());
-
-fn gdt_trustlet() -> ReadLockGuard<'static, GDT> {
-    GDT_TRUSTLET.lock_read()
-}
-
-fn gdt_trustlet_mut() -> WriteLockGuard<'static, GDT> {
-    GDT_TRUSTLET.lock_write()
-}
-
-/// IDT for Trustlets (shared between all Trustlets)
-static IDT_TRUSTLET: RWLock<IDT> = RWLock::new(IDT::new());
-
-fn idt_trustlet() -> ReadLockGuard<'static, IDT> {
-    IDT_TRUSTLET.lock_read()
-}
-
-fn idt_trustlet_mut() -> WriteLockGuard<'static, IDT> {
-    IDT_TRUSTLET.lock_write()
-}
-
-/// TSS for Trustlets
-// FIXME: the current implementation use the same TSS for all Trustlets. This works because
-// the only one Trustlet runs at a time.
-static TSS_TRUSTLET: RWLock<X86Tss> = RWLock::new(X86Tss::new());
-
-fn tss_trustlet() -> ReadLockGuard<'static, X86Tss> {
-    TSS_TRUSTLET.lock_read()
-}
-
-fn tss_trustlet_mut() -> WriteLockGuard<'static, X86Tss> {
-    TSS_TRUSTLET.lock_write()
-}
-
-global_asm!(
-    r#"
-    .align 4096
-    .code64
-    .section .text
-    .global asm_entry_trustlet_pf
-    asm_entry_trustlet_pf:
-        pushq %rcx
-        movq $14, %rcx
-        jmp asm_entry_with_error_code
-
-    asm_entry_with_error_code:
-       # #PF pushes the error code on the stack
-       pushq %rax
-       pushq %rbx
-       movq 24(%rsp), %rbx      # load error code
-       movq $0x4EFFFFFF, %rax   # monitor call number
-       cpuid                    # call the monitor
-
-       movq %cr2, %rax          # load faulting address
-       invlpg (%rax)            # invalidate the page
-
-       popq %rbx
-       popq %rax
-       popq %rcx
-       addq $8, %rsp            # remove error code
-
-       iretq
-
-    .global asm_entry_trustlet_gp
-    asm_entry_trustlet_gp:
-        # #GP pushes the error code on the stack
-        pushq %rcx
-        movq $13, %rcx
-        jmp asm_entry_with_error_code
-
-    .global asm_entry_trustlet_df
-    asm_entry_trustlet_df:
-       # #DF pushes the error code on the stack
-       pushq %rax
-       pushq %rbx
-       pushq %rcx
-       movq 24(%rsp), %rbx      # load error code
-       movq $0x4EFFFFFE, %rax   # monitor call number
-       sgdt gdt_desc(%rip)      # store current GDT
-       lea gdt_desc(%rip), %rcx
-       cpuid
-       /* no return */
-
-    # debug
-    .section .data
-    .global gdt_desc
-    gdt_desc:
-    .word gdt_entry_end - gdt_entry - 1 # 2 bytes for the GDT limit
-    .quad gdt_entry                     # 8 bytes for the GDT base address
-    .align 256
-    gdt_entry:
-    .quad 0x0000000000000000  # null
-    .quad 0x00af9b000000ffff  # code_64_kernel
-    .quad 0x00cf93000000ffff  # data_64_kernel
-    .quad 0x00affb000000ffff  # code_64_user
-    .quad 0x00cff3000000ffff  # data_64_user
-    .quad 0x0000000000000000  # null
-    .quad 0x0000000000000000  # tss
-    .quad 0xAAAAAAAAAAAAAAAA  # tss
-    gdt_entry_end:
-    "#,
-    options(att_syntax)
-);
-
-extern "C" {
-    fn asm_entry_trustlet_pf();
-    fn asm_entry_trustlet_df();
-    fn asm_entry_trustlet_gp();
-    static gdt_desc: u8;
-}
-
 impl ProcessContext {
+
+    pub fn early_init(&mut self, base: &ProcessBaseContext, measurements: ProcessMeasurements){
+
+        let page_table_ref = base.page_table_ref;
+
+        // Create VMSA for Zygote
+        // Will be used as base for Trustlet VMSA
+        let new_vmsa_page = allocate_page();
+        let new_vmsa_mapping = PerCPUPageMappingGuard::create_4k(new_vmsa_page).unwrap();
+        let new_vmsa_vaddr = new_vmsa_mapping.virt_addr();
+
+        rmp_adjust(new_vmsa_vaddr, RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
+        rmp_set_guest_vmsa(new_vmsa_vaddr).unwrap();
+        rmp_adjust(new_vmsa_vaddr, RMPFlags::VMPL1 | RMPFlags::VMSA, PageSize::Regular).unwrap();
+
+        //Guest VMSA -> New VMSA
+        let vmsa = VMSA::from_virt_addr(new_vmsa_vaddr);
+        let locked = this_cpu_shared().guest_vmsa.lock();
+        let old_vmsa_ptr = unsafe { SVSM_PERCPU_VMSA_BASE.as_mut_ptr::<VMSA>().as_mut().unwrap() };
+        _ = replace(vmsa, *old_vmsa_ptr);
+        drop(locked);
+
+        //New VMSA Setup
+        vmsa.vmpl = 1; // Trustlets always run in VMPL1
+        vmsa.cpl = 3; // Ring 3
+        vmsa.cr3 = u64::from(page_table_ref.process_page_table);
+        vmsa.efer = vmsa.efer | 1u64 << 12;
+        vmsa.rip = base.entry_point.into();
+        vmsa.sev_features = old_vmsa_ptr.sev_features | 4; // 4 is for #VC Reflect
+        vmsa.rflags &= !(1u64 << 9); // Clear IF;
+        // New Stack
+        vmsa.rbp = u64::from(TP_STACK_START_VADDR)+8*4096;
+        vmsa.rsp = u64::from(TP_STACK_START_VADDR)+8*4096;
+
+
+        // Setup exception handlers
+
+        setup_exceptions(vmsa, &page_table_ref);
+
+        // ------ end of exception handlers setup
+
+        let svme_mask: u64 = 1u64 << 12;
+        if !check_vmsa_ind(vmsa, vmsa.sev_features, svme_mask, RMPFlags::VMPL1.bits()) {
+            log::debug!("VMSA Check failed");
+            log::debug!("Bits: {}",vmsa.vmpl == RMPFlags::VMPL1.bits() as u8);
+            log::debug!("Efer & vsme_mask: {}", vmsa.efer & svme_mask == svme_mask);
+            log::debug!("SEV features: {}", vmsa.sev_features == vmsa.sev_features);
+            panic!("Failed to create new VMSA");
+        }
+
+
+        //Memory Channel setup -- No chain setup here
+        let page_table_addr = vmsa.cr3;
+        let mut pptr = ProcessPageTableRef::default();
+        pptr.set_external_table(page_table_addr);
+        self.channel.allocate_input(&mut pptr, PAGE_SIZE);
+        self.channel.allocate_output(&mut pptr, PAGE_SIZE);
+
+        base.vmsa = vmsa;
+        self.vmsa = new_vmsa_page;
+        self.sev_features = vmsa.sev_features;
+        //self.base = base;
+        self.measurements = measurements;
+        self.page_table_ref = page_table_ref;
+
+
+    }
 
     /// This function is called to create a Trustlet from a Zygote
     pub fn init(&mut self, base: ProcessBaseContext, measurements: ProcessMeasurements) {
@@ -625,6 +588,7 @@ impl ProcessContext {
 
         //Guest VMSA -> New VMSA
         let vmsa = VMSA::from_virt_addr(new_vmsa_vaddr);
+        //vmsa = self.vmsa;
         let locked = this_cpu_shared().guest_vmsa.lock();
         let old_vmsa_ptr = unsafe { SVSM_PERCPU_VMSA_BASE.as_mut_ptr::<VMSA>().as_mut().unwrap() };
         _ = replace(vmsa, *old_vmsa_ptr);
@@ -643,140 +607,9 @@ impl ProcessContext {
         vmsa.rsp = u64::from(TP_STACK_START_VADDR)+8*4096;
         // ---
         // Setup exception handlers
-
-        let mut svsm_page_table_ref = ProcessPageTableRef::default();
-        svsm_page_table_ref.set_external_table(read_cr3().into());
-
-        // disable SMAP/SMEP to execute the handler in ring0
-        // FIXME: propery setup the page flags for the handler
-        vmsa.cr4 = vmsa.cr4 & !(1u64 << 20 | 1u64 << 21);
-
-        log::debug!("asm_entry_trustlet_pf: {:x}", asm_entry_trustlet_pf as u64);
-        log::debug!("asm_entry_trustlet_df: {:x}", asm_entry_trustlet_df as u64);
-        log::debug!("gdt_desc: {:x}", unsafe { &gdt_desc as *const u8 as u64 });
-
-        // setup IDT
-        // 1. setup IDT entry for #PF, #DF
-        idt_trustlet_mut().set_entry(PF_VECTOR, IdtEntry::trap_entry(asm_entry_trustlet_pf));
-        idt_trustlet_mut().set_entry(GP_VECTOR, IdtEntry::trap_entry(asm_entry_trustlet_gp));
-        idt_trustlet_mut().set_entry(DF_VECTOR, IdtEntry::entry(asm_entry_trustlet_df));
-        //idt_trustlet_mut().set_entry(GP_VECTOR, IdtEntry::trap_entry(asm_entry_trustlet_df));
-        // 2. rmpadjust for IDT and handlers
-        let (idt_base, limit) = idt_trustlet().base_limit();
-        rmp_adjust(idt_base.into(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
-        rmp_adjust((asm_entry_trustlet_pf as u64).into(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
-        rmp_adjust((unsafe { &gdt_desc as *const u8 as u64 }).into(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
-        // 3. map IDT and handlers to trustlet's page table
-        let idt_phys = svsm_page_table_ref.virt_to_phys(idt_base.into());
-        let handler_phys = svsm_page_table_ref.virt_to_phys((asm_entry_trustlet_pf as u64).into());
-        let gdt_desc_phys = svsm_page_table_ref.virt_to_phys((unsafe { &gdt_desc as *const u8 as u64 }).into());
-        assert!(idt_phys != PhysAddr::null());
-        assert!(handler_phys != PhysAddr::null());
-        assert!(gdt_desc_phys != PhysAddr::null());
-        // FIXME: this assertion is to check the virtual address is available, but this page could
-        // be also used by GDT/TSS and in that case the assertion will fail. Currently IDT and TSS
-        // is aligend to 4KB boundary to about this issue. Fix this by properly allocating and
-        // managing the page for IDT, TSS and GDT.
-        assert!(page_table_ref.virt_to_phys(idt_base.into()) == PhysAddr::null());
-        assert!(page_table_ref.virt_to_phys((asm_entry_trustlet_pf as u64).into()) == PhysAddr::null());
-        assert!(page_table_ref.virt_to_phys((unsafe { &gdt_desc as *const u8 as u64 }).into()) == PhysAddr::null());
-        page_table_ref.map_4k_page(idt_base.into(), idt_phys, ProcessPageFlags::exec());
-        page_table_ref.map_4k_page((asm_entry_trustlet_pf as u64).into(), handler_phys, ProcessPageFlags::exec());
-        page_table_ref.map_4k_page((unsafe { &gdt_desc as *const u8 as u64 }).into(), gdt_desc_phys, ProcessPageFlags::data());
-        // 4. setup IDT segment in VMSA
-        let vmsa_idt = VMSASegment {
-            selector: 0,
-            flags: 0x0,
-            base: idt_base,
-            limit: limit-1,
-        };
-        vmsa.idt = vmsa_idt;
-
-        // setup TSS
-        let mut tss = tss_trustlet_mut();
-        let tss_base = tss.base();
-        let num_page = 1;
-        // 1. setup kernel stack address
-        tss.stacks[0] = (TP_KERN_STACK_START_VADDR + 4096*num_page-16).into();
-        // 2. map the stack address to trustlet's page table
-        page_table_ref.add_stack(TP_KERN_STACK_START_VADDR.into(), num_page);
-        // 3. map the TSS to trustlet's page table
-        let tss_phys = svsm_page_table_ref.virt_to_phys(tss_base.into());
-        assert!(tss_phys != PhysAddr::null());
-        assert!(page_table_ref.virt_to_phys(tss_base.into()) == PhysAddr::null());
-        page_table_ref.map_4k_page(tss_base.into(), tss_phys, ProcessPageFlags::data());
-        // 4. rmpadjust for TSS
-        rmp_adjust(tss_base.into(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
-        let vmsa_tss = VMSASegment {
-            selector: 6*8,
-            flags: 0x89, // TSS
-            base: tss_base,
-            limit: TSS_LIMIT as u32-1,
-        };
-        vmsa.tr = vmsa_tss;
-
-        // setup GDT
-        // GDT entreies:
-        // 0. null
-        // 1. code_64_kernel
-        // 2. data_64_kernel
-        // 3. code_64_user
-        // 4. data_64_user
-        // 5. null
-        // 6-7. TSS
-        let (desc0, desc1) = tss.to_gdt_entry();
-        unsafe{
-            // this sets the entry 6 for TSS
-            gdt_trustlet_mut().set_tss_entry(desc0, desc1);
+        if true {
+            setup_exceptions(vmsa, &page_table_ref);
         }
-        let (base_gdt, limit) = gdt_trustlet().base_limit();
-        log::debug!("GDT base: {:x}, limit: {:x}", base_gdt, limit);
-        // 1. rmpadjust for GDT
-        rmp_adjust(base_gdt.into(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
-        // 2. map GDT to trustlet's page table
-        let gdt_phys = svsm_page_table_ref.virt_to_phys(base_gdt.into());
-        assert!(gdt_phys != PhysAddr::null());
-        // FIXME: currently use the same virtual address as the SVSM for the trustlet
-        assert!(page_table_ref.virt_to_phys(base_gdt.into()) == PhysAddr::null());
-        page_table_ref.map_4k_page(base_gdt.into(), gdt_phys, ProcessPageFlags::data());
-        // 3. setup GDT segment in VMSA
-        let vmsa_gdt = VMSASegment {
-            selector: 0,
-            flags: 0,
-            base: base_gdt,
-            limit: limit,
-        };
-        vmsa.gdt = vmsa_gdt;
-
-        let cs = VMSASegment {
-            selector: 3*8 | 0x3,
-            flags: 0xAFB, // user, code, 4KB granularity, 64-bit
-            base: 0,
-            limit: 0xFFFF_FFFF,
-        };
-        let ds = VMSASegment {
-            selector: 4*8 | 0x3,
-            flags: 0xCF3, // user, data, 4KB granularity, 64-bit
-            base: 0,
-            limit: 0xFFFF_FFFF,
-        };
-
-        vmsa.cs = cs;
-        vmsa.ds = ds;
-        vmsa.es = ds;
-        vmsa.fs = ds;
-        vmsa.ss = ds;
-
-        let efer = vmsa.efer;
-        let cr4 = vmsa.cr4;
-        let rflags = vmsa.rflags;
-        log::debug!("vmsa EFER: {:?}", efer);
-        log::debug!("vmsa cr4: {:?}", cr4);
-        log::debug!("vmsa CS: {:?}", vmsa.cs);
-        log::debug!("vmsa SS: {:?}", vmsa.ss);
-        log::debug!("vmsa DS: {:?}", vmsa.ds);
-        log::debug!("vmsa rflags: {:?}", rflags);
-
         // ------ end of exception handlers setup
 
         //Check VMSA

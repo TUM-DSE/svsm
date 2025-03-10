@@ -151,6 +151,44 @@ pub struct PALContext {
     return_value: u64,
 }
 
+pub fn early_invoke(id: u64) {
+    let zygote = PROCESS_STORE.get(ProcessID(id.try_into().unwrap()));
+
+    let vmsa_paddr = zygote.context.vmsa;
+    let vmsa_mapping = PerCPUPageMappingGuard::create_4k(zygote.context.vmsa).unwrap();
+    let vmsa: &mut VMSA = unsafe { vmsa_mapping.virt_addr().as_mut_ptr::<VMSA>().as_mut().unwrap() };
+
+    let mut string_buf: [u8;256] = [0;256];
+    let mut string_pos: usize = 0;
+    let sev_features = zygote.context.sev_features;
+    let apic_id = this_cpu().get_apic_id();
+
+    let mut rc = PALContext{
+        process: zygote,
+        vmsa,
+        string_buf,
+        string_pos,
+        // Only required for Trustlet
+        result_addr: 0,
+        result_size: 0,
+        guest_page_table: 0,
+        invocation_arg_guest_vaddr: 0,
+        invocation_arg_size: 0,
+        return_value: 0,
+    };
+
+    loop {
+        unsafe {(*(*this_cpu_unsafe()).ghcb).ap_create(vmsa_paddr,
+                                                       u64::from(apic_id),
+                                                       TRUSTLET_VMPL,
+                                                       sev_features).unwrap()}
+        if !rc.handle_process_request(){
+            break;
+        }
+    }
+
+}
+
 pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
 
     log::debug!("Invoking Trustlet");
@@ -586,7 +624,7 @@ impl ProcessRuntime for PALContext  {
     /// Retrun:
     /// * rcx: 0 on success, -1 on failure
     fn pal_svsm_virt_alloc(&mut self) -> bool {
-
+        log::info!("Virt");
         // Getting the Page Table of the current Trustlet being executed
         let page_table = self.vmsa.cr3;
         let mut page_table_ref = ProcessPageTableRef::default();
@@ -718,7 +756,6 @@ impl ProcessRuntime for PALContext  {
     /// Return:
     /// * rcx: 0 on success, -1 on failure
     fn pal_svsm_map(&mut self) -> bool {
-        log::error!("Test");
         let addr = self.vmsa.rbx;
         let size = self.vmsa.rcx;
         let flags = self.vmsa.rdx;
