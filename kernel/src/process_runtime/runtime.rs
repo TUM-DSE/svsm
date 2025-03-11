@@ -151,8 +151,8 @@ pub struct PALContext {
     return_value: u64,
 }
 
-pub fn early_invoke(id: u64) {
-    let zygote = PROCESS_STORE.get(ProcessID(id.try_into().unwrap()));
+pub fn early_invoke(zygote: &'static mut TrustedProcess) {
+        //let zygote = PROCESS_STORE.get(ProcessID(id.try_into().unwrap()));
 
     let vmsa_paddr = zygote.context.vmsa;
     let vmsa_mapping = PerCPUPageMappingGuard::create_4k(zygote.context.vmsa).unwrap();
@@ -495,7 +495,7 @@ impl ProcessRuntime for PALContext  {
         let rip = self.vmsa.rip;
         log::info!("RIP: {:#x?}",rip);
         log::info!("Fin done");
-        return true;
+        return false;
     }
 
     fn pal_nop(&mut self) -> bool {

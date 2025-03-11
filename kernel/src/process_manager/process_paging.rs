@@ -404,7 +404,7 @@ impl ProcessPageTableRef {
                     pte_idx = 0;
                     while pte_idx < 512 {
                         let page = pte_table[pte_idx];
-                        log::info!("    {:?} {} {} {} {}", page, pgd_idx, pud_idx, pmd_idx, pte_idx);
+                        //log::info!("    {:?} {} {} {} {}", page, pgd_idx, pud_idx, pmd_idx, pte_idx);
                         if strip_paddr!(page.0) == null {
                             pte_idx += 1;
                             continue;
@@ -414,68 +414,13 @@ impl ProcessPageTableRef {
                             }
 
                             let v = (pgd_idx << (9*3 +12)) + (pud_idx << (9*2 +12)) + (pmd_idx <<(9*1 +12)) + (pte_idx << 12);
-                            log::info!("Virt Address: {:#x}",v);
-                            log::info!("Page Before: {:#x?}", page);
+                            //log::info!("Virt Address: {:#x}",v);
+                            //log::info!("Page Before: {:#x?}", page);
                             let page = PhysAddr::from((u64::from(page.0) | ProcessPageFlags::COPY_ON_WRITE.bits()) & !ProcessPageFlags::WRITABLE.bits());
-                            log::info!("Page After: {:#x?}", page);
-                            log::info!("{:#x?}", strip_paddr!(page));
+                            //log::info!("Page After: {:#x?}", page);
+                            //log::info!("{:#x?}", strip_paddr!(page));
                             if !(pgd_idx == 1 && pud_idx == 64 ) {
                                 pte_table[pte_idx] = ProcessPageTableEntry(page);
-                            }
-                        }
-                        pte_idx += 1;
-                    }
-                    pmd_idx += 1;
-                }
-                pud_idx += 1;
-            }
-            pgd_idx += 1;
-        }
-
-        (_mapping_pgd, pgd_table) = paddr_as_table!(self.process_page_table);
-        pgd_idx = 1;
-        log::info!("Start finilaizing");
-        while pgd_idx < 512 {
-            let pud = pgd_table[pgd_idx];
-            //log::info!(" {:?} {} {} {} {}", pud, pgd_idx, pud_idx, pmd_idx, pte_idx);
-            if strip_paddr!(pud.0) == null {
-                pgd_idx += 1;
-                continue;
-            } else {
-                (_mapping_pud, pud_table) = paddr_as_table!(strip_paddr!(pud.0));
-            }
-            pud_idx = 0;
-            while pud_idx < 512 {
-                let pmd = pud_table[pud_idx];
-                if strip_paddr!(pmd.0) == null {
-                    pud_idx += 1;
-                    continue;
-                } else {
-                    (_mapping_pmd, pmd_table) = paddr_as_table!(strip_paddr!(pmd.0));
-                }
-                pmd_idx = 0;
-                while pmd_idx < 512 {
-                    let pte = pmd_table[pmd_idx];
-                    if strip_paddr!(pte.0) == null {
-                        pmd_idx += 1;
-                        continue;
-                    } else {
-                        (_mapping_pte, pte_table) = paddr_as_table!(strip_paddr!(pte.0));
-                    }
-                    pte_idx = 0;
-                    while pte_idx < 512 {
-                        let page = pte_table[pte_idx];
-                        if strip_paddr!(page.0) == null {
-                            pte_idx += 1;
-                            continue;
-                        } else {
-                            if strip_paddr!(page.0) == PhysAddr::from(0x104999000u64) {
-                                log::warn!("Page found");
-                            }
-                            let page = u64::from(page.0);
-                            if page & ProcessPageFlags::COPY_ON_WRITE.bits() != 0 {
-
-                                log::warn!("Page with CoW flag set but not CoW page: {:#x?}", page);
                             }
                         }
                         pte_idx += 1;
@@ -902,6 +847,14 @@ impl ProcessPageTableRef {
         assert!(self.process_page_table != PhysAddr::null());
         assert!(other.process_page_table != PhysAddr::null());
         self._copy_page_table(other.process_page_table, self.process_page_table, 4);
+    }
+
+    pub fn copy_pgd(&mut self, other: &ProcessPageTableRef) {
+        let (_mapping, new_table) = paddr_as_u64_slice!(self.process_page_table);
+        let (_mapping_z, zygote_table) = paddr_as_u64_slice!(other.process_page_table);
+        for i in 0..512 {
+            new_table[i] = zygote_table[i];
+        }
     }
 
     pub fn handle_cow(&mut self, addr: VirtAddr, user_access: bool) -> bool {

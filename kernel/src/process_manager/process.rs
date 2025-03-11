@@ -23,7 +23,7 @@ use crate::process_manager::process_memory::{allocate_page, free_page, ALLOCATIO
 use crate::process_manager::allocation::AllocationRange;
 use crate::process_manager::process_paging::{ProcessPageTableEntry, ProcessPageTableRef};
 use crate::process_manager::process_paging::ProcessPageFlags;
-use crate::process_runtime::runtime::MmapManager;
+use crate::process_runtime::runtime::{early_invoke, MmapManager};
 use crate::protocols::errors::SvsmResultCode;
 use crate::protocols::errors::SvsmReqError;
 use crate::protocols::RequestParams;
@@ -139,6 +139,7 @@ pub struct TrustedProcess {
     pub process_type: TrustedProcessType,
     pub id: u64,
     pub parent_id: u64,
+    //#[cfg(feature = "attestation_benchmark")]
     pub base: ProcessBaseContext,
     pub measurements: ProcessMeasurements,
     #[allow(dead_code)]
@@ -195,13 +196,15 @@ impl TrustedProcess {
         libos_range.delete();
         log::debug!("TODO: Compare with libos measurement of the policy");
 
+        let mut context = ProcessContext::default();
+        context.early_init(base, measurements);
         Self {
             process_type: TrustedProcessType::Zygote,
             id: 0,
             parent_id: 0,
             base,
             measurements,
-            context: ProcessContext::default(),
+            context,
             mmap_manager: MmapManager::new(),
             pf_target_vaddr: 0,
         }
@@ -212,7 +215,7 @@ impl TrustedProcess {
         let base: ProcessBaseContext = process.base;
         let measurements: ProcessMeasurements = process.measurements;
         let mut context = ProcessContext::default();
-        context.init(base, measurements);
+        context.init(base, measurements, process.context);
 
         TrustedProcess {
             process_type: TrustedProcessType::Trustlet,
@@ -310,10 +313,7 @@ pub fn create_trusted_process(params: &mut RequestParams, t: TrustedProcessType)
             // e.g. Copy the Zygote into memory
             // and parse it to create a page table
             let z: TrustedProcess = TrustedProcess::zygote(process_addr, size, guest_pgt);
-            let base = &mut z.base;
-            let measurements: ProcessMeasurements = z.measurements;
-            let mut context = ProcessContext::default();
-            context.early_init(base, measurements);
+            //context.early_init(base, measurements);
 
 
 
@@ -322,6 +322,8 @@ pub fn create_trusted_process(params: &mut RequestParams, t: TrustedProcessType)
             // the store
             let res = PROCESS_STORE.insert(z);
 
+            let z = PROCESS_STORE.get(ProcessID(res.try_into().unwrap()));
+            early_invoke(z);
 
 
             // Copy the value to the return register
@@ -452,22 +454,22 @@ impl ProcessBaseContext {
         let orig_size = size;
         let size = (4096 - (size & 0xFFF)) + size;
         self.page_table_ref.add_manifest(manifest, size);
-        self.alloc_range_manifest.0 = data.0;
-        self.alloc_range_manifest.1 = orig_size;
+        //self.alloc_range_manifest.0 = data.0;
+        //self.alloc_range_manifest.1 = orig_size;
     }
 
     pub fn add_libos(&mut self, libos: VirtAddr, size: u64, data: AllocationRange){
         let orig_size = size;
         let size = (4096 - (size & 0xFFF)) + size;
         self.page_table_ref.add_libos(libos,size);
-        self.alloc_range_libos.0 = data.0;
-        self.alloc_range_libos.1 = orig_size;
+        //self.alloc_range_libos.0 = data.0;
+        //self.alloc_range_libos.1 = orig_size;
     }
 
     pub fn init_with_data(&mut self, elf: VirtAddr, size: u64, data: AllocationRange) {
         self.init(elf, size);
-        self.alloc_range.0 = data.0;
-        self.alloc_range.1 = size;
+        //self.alloc_range.0 = data.0;
+        //self.alloc_range.1 = size;
     }
 
 }
@@ -497,7 +499,7 @@ impl Default for ProcessContext {
 
 impl ProcessContext {
 
-    pub fn early_init(&mut self, base: &ProcessBaseContext, measurements: ProcessMeasurements){
+    pub fn early_init(&mut self, base: ProcessBaseContext, measurements: ProcessMeasurements){
 
         let page_table_ref = base.page_table_ref;
 
@@ -554,7 +556,6 @@ impl ProcessContext {
         self.channel.allocate_input(&mut pptr, PAGE_SIZE);
         self.channel.allocate_output(&mut pptr, PAGE_SIZE);
 
-        base.vmsa = vmsa;
         self.vmsa = new_vmsa_page;
         self.sev_features = vmsa.sev_features;
         //self.base = base;
@@ -565,17 +566,17 @@ impl ProcessContext {
     }
 
     /// This function is called to create a Trustlet from a Zygote
-    pub fn init(&mut self, base: ProcessBaseContext, measurements: ProcessMeasurements) {
+    pub fn init(&mut self, base: ProcessBaseContext, measurements: ProcessMeasurements, zygote_context: ProcessContext) {
 
         // Setup a new page table for the Process
         // FIXME: this performs full deep copy of memory and page table from the base
         // TODO:  implement proper CoW
         let mut new_page_table_ref = ProcessPageTableRef::default();
         new_page_table_ref.init_vmpl1();
-        new_page_table_ref.copy_from(&base.page_table_ref);
+        new_page_table_ref.copy_pgd(&zygote_context.page_table_ref);
+        //new_page_table_ref.copy_from(&base.page_table_ref);
         let page_table_ref = new_page_table_ref;
         //let page_table_ref = base.page_table_ref;
-
         //Creating new VMSA for the Process
         let new_vmsa_page = allocate_page();
         let new_vmsa_mapping = PerCPUPageMappingGuard::create_4k(new_vmsa_page).unwrap();
@@ -588,26 +589,30 @@ impl ProcessContext {
 
         //Guest VMSA -> New VMSA
         let vmsa = VMSA::from_virt_addr(new_vmsa_vaddr);
+        let zygote_vmsa_mapping = PerCPUPageMappingGuard::create_4k(zygote_context.vmsa).unwrap();
+        let zygote_vmsa_vaddr = zygote_vmsa_mapping.virt_addr();
+        let zygote_vmsa = VMSA::from_virt_addr(zygote_vmsa_vaddr);
+        *vmsa = *zygote_vmsa;
         //vmsa = self.vmsa;
-        let locked = this_cpu_shared().guest_vmsa.lock();
-        let old_vmsa_ptr = unsafe { SVSM_PERCPU_VMSA_BASE.as_mut_ptr::<VMSA>().as_mut().unwrap() };
-        _ = replace(vmsa, *old_vmsa_ptr);
-        drop(locked);
+        //let locked = this_cpu_shared().guest_vmsa.lock();
+        //let old_vmsa_ptr = unsafe { SVSM_PERCPU_VMSA_BASE.as_mut_ptr::<VMSA>().as_mut().unwrap() };
+        //_ = replace(vmsa, *old_vmsa_ptr);
+        //drop(locked);
 
         //New VMSA Setup
-        vmsa.vmpl = 1; // Trustlets always run in VMPL1
-        vmsa.cpl = 3; // Ring 3
+        //vmsa.vmpl = 1; // Trustlets always run in VMPL1
+        //vmsa.cpl = 3; // Ring 3
         vmsa.cr3 = u64::from(page_table_ref.process_page_table);
-        vmsa.efer = vmsa.efer | 1u64 << 12;
-        vmsa.rip = base.entry_point.into();
-        vmsa.sev_features = old_vmsa_ptr.sev_features | 4; // 4 is for #VC Reflect
-        vmsa.rflags &= !(1u64 << 9); // Clear IF;
+        //vmsa.efer = vmsa.efer | 1u64 << 12;
+        //vmsa.rip = base.entry_point.into();
+        //vmsa.sev_features = zygote_vmsa.sev_features | 4; // 4 is for #VC Reflect
+        //vmsa.rflags &= !(1u64 << 9); // Clear IF;
         // New Stack
-        vmsa.rbp = u64::from(TP_STACK_START_VADDR)+8*4096;
-        vmsa.rsp = u64::from(TP_STACK_START_VADDR)+8*4096;
+        //vmsa.rbp = u64::from(TP_STACK_START_VADDR)+8*4096;
+        //vmsa.rsp = u64::from(TP_STACK_START_VADDR)+8*4096;
         // ---
         // Setup exception handlers
-        if true {
+        if false {
             setup_exceptions(vmsa, &page_table_ref);
         }
         // ------ end of exception handlers setup
