@@ -624,7 +624,6 @@ impl ProcessRuntime for PALContext  {
     /// Retrun:
     /// * rcx: 0 on success, -1 on failure
     fn pal_svsm_virt_alloc(&mut self) -> bool {
-        log::info!("Virt");
         // Getting the Page Table of the current Trustlet being executed
         let page_table = self.vmsa.cr3;
         let mut page_table_ref = ProcessPageTableRef::default();

@@ -569,14 +569,11 @@ impl ProcessContext {
     pub fn init(&mut self, base: ProcessBaseContext, measurements: ProcessMeasurements, zygote_context: ProcessContext) {
 
         // Setup a new page table for the Process
-        // FIXME: this performs full deep copy of memory and page table from the base
-        // TODO:  implement proper CoW
         let mut new_page_table_ref = ProcessPageTableRef::default();
         new_page_table_ref.init_vmpl1();
         new_page_table_ref.copy_pgd(&zygote_context.page_table_ref);
-        //new_page_table_ref.copy_from(&base.page_table_ref);
         let page_table_ref = new_page_table_ref;
-        //let page_table_ref = base.page_table_ref;
+
         //Creating new VMSA for the Process
         let new_vmsa_page = allocate_page();
         let new_vmsa_mapping = PerCPUPageMappingGuard::create_4k(new_vmsa_page).unwrap();
@@ -593,40 +590,9 @@ impl ProcessContext {
         let zygote_vmsa_vaddr = zygote_vmsa_mapping.virt_addr();
         let zygote_vmsa = VMSA::from_virt_addr(zygote_vmsa_vaddr);
         *vmsa = *zygote_vmsa;
-        //vmsa = self.vmsa;
-        //let locked = this_cpu_shared().guest_vmsa.lock();
-        //let old_vmsa_ptr = unsafe { SVSM_PERCPU_VMSA_BASE.as_mut_ptr::<VMSA>().as_mut().unwrap() };
-        //_ = replace(vmsa, *old_vmsa_ptr);
-        //drop(locked);
 
-        //New VMSA Setup
-        //vmsa.vmpl = 1; // Trustlets always run in VMPL1
-        //vmsa.cpl = 3; // Ring 3
+        //Trustlet VMSA Setup
         vmsa.cr3 = u64::from(page_table_ref.process_page_table);
-        //vmsa.efer = vmsa.efer | 1u64 << 12;
-        //vmsa.rip = base.entry_point.into();
-        //vmsa.sev_features = zygote_vmsa.sev_features | 4; // 4 is for #VC Reflect
-        //vmsa.rflags &= !(1u64 << 9); // Clear IF;
-        // New Stack
-        //vmsa.rbp = u64::from(TP_STACK_START_VADDR)+8*4096;
-        //vmsa.rsp = u64::from(TP_STACK_START_VADDR)+8*4096;
-        // ---
-        // Setup exception handlers
-        if false {
-            setup_exceptions(vmsa, &page_table_ref);
-        }
-        // ------ end of exception handlers setup
-
-        //Check VMSA
-        let svme_mask: u64 = 1u64 << 12;
-        if !check_vmsa_ind(vmsa, vmsa.sev_features, svme_mask, RMPFlags::VMPL1.bits()) {
-            log::debug!("VMSA Check failed");
-            log::debug!("Bits: {}",vmsa.vmpl == RMPFlags::VMPL1.bits() as u8);
-            log::debug!("Efer & vsme_mask: {}", vmsa.efer & svme_mask == svme_mask);
-            log::debug!("SEV features: {}", vmsa.sev_features == vmsa.sev_features);
-            panic!("Failed to create new VMSA");
-        }
-
 
         //Memory Channel setup -- No chain setup here
         let page_table_addr = vmsa.cr3;
@@ -634,7 +600,7 @@ impl ProcessContext {
         pptr.set_external_table(page_table_addr);
         self.channel.allocate_input(&mut pptr, PAGE_SIZE);
         self.channel.allocate_output(&mut pptr, PAGE_SIZE);
-
+        pptr.handle_cow(VirtAddr::from(TP_KERN_STACK_START_VADDR), false);
 
         self.vmsa = new_vmsa_page;
         self.sev_features = vmsa.sev_features;
