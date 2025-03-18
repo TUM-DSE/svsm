@@ -29,6 +29,7 @@ use core::ptr::replace;
 use super::memory_helper::ZERO_PAGE;
 
 const PREALLOCATED_SIZE: u64 = 4194304; // 16 GiB
+const ADDITIONAL_GUEST_MEMORY: usize = 8 * GiB;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -109,11 +110,18 @@ impl ProcessMemConfig{
             log::error!("Initial Memory Region to small (not implemented)");
             panic!();
         }
+        let initial_memory_region_2 = get_memory_region_from_map(1);
+        if initial_memory_region_2.end() - initial_memory_region_2.start() < ADDITIONAL_GUEST_MEMORY + 4 * GiB {
+            log::error!("Initial Memory Region 2 to small (not implemented)");
+            panic!();
+        }
+
 
         for i in 1..memory_region_count {
             let region = get_memory_region_from_map(i);
             total_size += region.end() - region.start();
         }
+        total_size -= ADDITIONAL_GUEST_MEMORY;
 
         if CONDITION_MIN_MEM_SIZE > total_size {
             log::error!("Not enough memory given to VMPL0 (second memory region is to small)");
@@ -129,7 +137,7 @@ impl ProcessMemConfig{
         //address_size is 8 bytes
         let free_memory_list_size = (total_memory_size / PAGE_SIZE) * 8;
         let region = get_memory_region_from_map(1);
-        let usable_memory_region = region.start() + free_memory_list_size;
+        let usable_memory_region = region.start() + ADDITIONAL_GUEST_MEMORY + free_memory_list_size;
 
         if usize::from(usable_memory_region) % PAGE_SIZE != 0 {
             log::error!("Something went wrong. Memory start is not page aligned.");
@@ -138,7 +146,7 @@ impl ProcessMemConfig{
 
         log::info!("Total available memory: {} B", total_memory_size);
         log::info!("Usable available memory: {} B", total_memory_size - free_memory_list_size);
-        log::info!("Total Memory Region: {:#x} - {:#x}", region.start(), region.end());
+        log::info!("Total Memory Region: {:#x} - {:#x}", region.start() + ADDITIONAL_GUEST_MEMORY, region.end());
         log::info!("Usable Memory Region: {:#x} - {:#x}", usable_memory_region, region.end());
 
         (free_memory_list_size, usable_memory_region.into())
@@ -156,7 +164,7 @@ impl ProcessMemConfig{
         //Map the memory region for the Page list into the current core's page table
         let region = get_memory_region_from_map(1);
         let mut pgtable = get_init_pgtable_locked(); //Gets the shared page table for all cores (Does not affect cores)
-        pgtable.map_region_4k(free_memory_list_memory_range, region.start(), PTEntryFlags::data()).unwrap();
+        pgtable.map_region_4k(free_memory_list_memory_range, region.start() + ADDITIONAL_GUEST_MEMORY, PTEntryFlags::data()).unwrap();
         let page_table_entry = PTEntry::from(read_cr3()); // Get current core's page table
         let address = phys_to_virt(page_table_entry.address());
         let page_table_page = unsafe { &mut *address.as_mut_ptr::<PageTable>() };
@@ -164,7 +172,7 @@ impl ProcessMemConfig{
         for p in 0..(free_memory_list_size / PAGE_SIZE) { //Iterate over every require page
             let offset = p * PAGE_SIZE;
             let vaddr = VirtAddr::from(ADDRESS_START_FREE_PAGE_LIST);
-            let paddr = region.start();
+            let paddr = region.start() + ADDITIONAL_GUEST_MEMORY;
             match monitor_pvalidate_vaddr_4k(vaddr + offset, paddr + offset) {
                 Ok(_) => (),
                 Err(e) => {log::error!("{:?}",e); panic!("Failed to pvalidate initial list");}
@@ -223,7 +231,7 @@ impl ProcessMemConfig{
         self.free = total_size - free_memory_list_size;
         self.free_page_list_used_len = 0; //No pages used yet
         let region = get_memory_region_from_map(1);
-        self.page_base = region.start() + free_memory_list_size;
+        self.page_base = region.start() + free_memory_list_size + ADDITIONAL_GUEST_MEMORY;
         self.page_limit = region.end();
         self.initilized = true;
     }
