@@ -1,7 +1,10 @@
 use crate::address::{PhysAddr, VirtAddr};
 use crate::cpu::control_regs::read_cr3;
+use crate::cpu::msr::rdtsc;
+use crate::debug::stacktrace::print_stack;
 use crate::locking::SpinLock;
-use crate::mm::pagetable::{get_init_pgtable_locked, PTEntry, PTEntryFlags, PageTable};
+use crate::mm::pagetable::{get_init_pgtable_locked, PTEntry, PTEntryFlags, PageTable, PageTableRef};
+use crate::process_manager::outb::outb;
 use crate::protocols::errors::SvsmReqError;
 use crate::sev::SevSnpError;
 use crate::types::PageSize;
@@ -14,10 +17,19 @@ use crate::cpu::ghcb::current_ghcb;
 use crate::sev::ghcb::PageStateChangeOp;
 use crate::mm::PerCPUPageMappingGuard;
 use crate::utils::immut_after_init::ImmutAfterInitCell;
-use crate::utils::{MemoryRegion};
+use crate::utils::MemoryRegion;
 use crate::mm::phys_to_virt;
 use crate::{paddr_as_u64_slice, map_paddr, vaddr_as_u64_slice};
 use crate::mm::memory::get_memory_region_from_map;
+use crate::address::Address;
+
+use core::ops::Index;
+use core::ptr::replace;
+
+use super::memory_helper::ZERO_PAGE;
+
+const PREALLOCATED_SIZE: u64 = 4194304; // 16 GiB
+const ADDITIONAL_GUEST_MEMORY: usize = 8 * GiB;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -98,11 +110,18 @@ impl ProcessMemConfig{
             log::error!("Initial Memory Region to small (not implemented)");
             panic!();
         }
+        let initial_memory_region_2 = get_memory_region_from_map(1);
+        if initial_memory_region_2.end() - initial_memory_region_2.start() < ADDITIONAL_GUEST_MEMORY + 4 * GiB {
+            log::error!("Initial Memory Region 2 to small (not implemented)");
+            panic!();
+        }
+
 
         for i in 1..memory_region_count {
             let region = get_memory_region_from_map(i);
             total_size += region.end() - region.start();
         }
+        total_size -= ADDITIONAL_GUEST_MEMORY;
 
         if CONDITION_MIN_MEM_SIZE > total_size {
             log::error!("Not enough memory given to VMPL0 (second memory region is to small)");
@@ -118,7 +137,7 @@ impl ProcessMemConfig{
         //address_size is 8 bytes
         let free_memory_list_size = (total_memory_size / PAGE_SIZE) * 8;
         let region = get_memory_region_from_map(1);
-        let usable_memory_region = region.start() + free_memory_list_size;
+        let usable_memory_region = region.start() + ADDITIONAL_GUEST_MEMORY + free_memory_list_size;
 
         if usize::from(usable_memory_region) % PAGE_SIZE != 0 {
             log::error!("Something went wrong. Memory start is not page aligned.");
@@ -127,7 +146,7 @@ impl ProcessMemConfig{
 
         log::info!("Total available memory: {} B", total_memory_size);
         log::info!("Usable available memory: {} B", total_memory_size - free_memory_list_size);
-        log::info!("Total Memory Region: {:#x} - {:#x}", region.start(), region.end());
+        log::info!("Total Memory Region: {:#x} - {:#x}", region.start() + ADDITIONAL_GUEST_MEMORY, region.end());
         log::info!("Usable Memory Region: {:#x} - {:#x}", usable_memory_region, region.end());
 
         (free_memory_list_size, usable_memory_region.into())
@@ -145,7 +164,7 @@ impl ProcessMemConfig{
         //Map the memory region for the Page list into the current core's page table
         let region = get_memory_region_from_map(1);
         let mut pgtable = get_init_pgtable_locked(); //Gets the shared page table for all cores (Does not affect cores)
-        pgtable.map_region_4k(free_memory_list_memory_range, region.start(), PTEntryFlags::data()).unwrap();
+        pgtable.map_region_4k(free_memory_list_memory_range, region.start() + ADDITIONAL_GUEST_MEMORY, PTEntryFlags::data()).unwrap();
         let page_table_entry = PTEntry::from(read_cr3()); // Get current core's page table
         let address = phys_to_virt(page_table_entry.address());
         let page_table_page = unsafe { &mut *address.as_mut_ptr::<PageTable>() };
@@ -153,7 +172,7 @@ impl ProcessMemConfig{
         for p in 0..(free_memory_list_size / PAGE_SIZE) { //Iterate over every require page
             let offset = p * PAGE_SIZE;
             let vaddr = VirtAddr::from(ADDRESS_START_FREE_PAGE_LIST);
-            let paddr = region.start();
+            let paddr = region.start() + ADDITIONAL_GUEST_MEMORY;
             match monitor_pvalidate_vaddr_4k(vaddr + offset, paddr + offset) {
                 Ok(_) => (),
                 Err(e) => {log::error!("{:?}",e); panic!("Failed to pvalidate initial list");}
@@ -212,10 +231,20 @@ impl ProcessMemConfig{
         self.free = total_size - free_memory_list_size;
         self.free_page_list_used_len = 0; //No pages used yet
         let region = get_memory_region_from_map(1);
-        self.page_base = region.start() + free_memory_list_size;
+        self.page_base = region.start() + free_memory_list_size + ADDITIONAL_GUEST_MEMORY;
         self.page_limit = region.end();
         self.initilized = true;
     }
+
+    pub fn preallocate_memory(&mut self) {
+        log::info!("Memory Preallocation ({} Pages)", PREALLOCATED_SIZE);
+        let page_count = PREALLOCATED_SIZE;
+        for i in 0..page_count {
+            let p = self.get_next_page();
+            self.free_page(u64::from(p));
+        }
+    }
+
 
     fn check_for_free_page(&mut self) -> PhysAddr {
         if self.free_page_list_used_len == 0 {
@@ -226,7 +255,39 @@ impl ProcessMemConfig{
         let entry: &mut PhysAddr = unsafe {&mut *((addr) as *mut PhysAddr)};
         let tmp = *entry;
         *entry = PhysAddr::null();
+
+        let (_mapping, a) = paddr_as_u64_slice!(tmp);
+        a.fill(0);
         tmp
+    }
+
+    pub fn prepare_free_pages(&mut self, size: u64) -> PhysAddr {
+        for i in 0..size {
+            let addr = PhysAddr::from(self.page_base);
+            ProcessMemConfig::validate_and_clear(u64::from(addr));
+            self.page_base = self.page_base + PAGE_SIZE;
+
+        }
+        PhysAddr::null()
+    }
+
+    pub fn free_page(&mut self, paddr: u64) {
+        let (map_, s) = paddr_as_u64_slice!(PhysAddr::from(paddr));
+        _ = unsafe {replace(s, ZERO_PAGE)};
+        let idx = self.free_page_list_used_len as u64;
+        let addr = self.free_page_list + (idx * 8);
+        let ptr = addr as *mut u64;
+        let r: &mut u64 = unsafe{&mut *ptr};
+        *r = paddr;
+        self.free_page_list_used_len += 1;
+
+    }
+    #[inline]
+    pub fn get_next_page(&mut self) -> PhysAddr {
+        let addr = PhysAddr::from(self.page_base);
+        ProcessMemConfig::validate_and_clear(u64::from(addr));
+        self.page_base = self.page_base + PAGE_SIZE;
+        return addr;
     }
 
     pub fn get_free_page(&mut self) -> PhysAddr {
@@ -237,6 +298,32 @@ impl ProcessMemConfig{
             self.page_base = self.page_base + PAGE_SIZE;
         }
         addr
+    }
+
+    pub fn add_free_page(&mut self, free: PhysAddr) {
+        debug_assert_eq!(free.bits() & PAGE_SIZE - 1, 0);
+
+        if cfg!(debug_assertions) {
+            for addr in (self.free_page_list..(self.free_page_list + (self.free_page_list_used_len as u64 * ADDRESS_LENGTH))).step_by(ADDRESS_LENGTH as usize) {
+                unsafe { assert_ne!(*(addr as *mut PhysAddr), free); }
+            }
+
+            if free.bits() < 0x100c00000 || free.bits() > 0x10e000000 {
+                log::info!("freeing wrong page? {:#x}", free);
+            }
+        }
+
+        let addr = self.free_page_list + (self.free_page_list_used_len as u64 * ADDRESS_LENGTH);
+        let entry = addr as *mut PhysAddr;
+        unsafe {
+            debug_assert_eq!(entry.read(), PhysAddr::null());
+            entry.write(free);
+        }
+        self.free_page_list_used_len += 1;
+    }
+
+    fn allocated_amount(&mut self) -> usize {
+        self.page_base.bits() - self.free_page_list_used_len * PAGE_SIZE
     }
 
     pub fn virt_to_phys(&self, vaddr: VirtAddr) -> PhysAddr {
@@ -259,8 +346,24 @@ impl ProcessMemConfig{
     }
 }
 
+pub fn preallocate_memory() {
+    PROCESS_MEM_CONFIG.lock().preallocate_memory()
+}
+
 pub fn allocate_page() -> PhysAddr {
     PROCESS_MEM_CONFIG.lock().get_free_page()
+}
+
+//pub fn free_page(paddr: u64) {
+//    PROCESS_MEM_CONFIG.lock().free_page(paddr);
+//}
+
+pub fn free_page(addr: PhysAddr) {
+    PROCESS_MEM_CONFIG.lock().add_free_page(addr)
+}
+
+pub fn allocated_amount() -> usize {
+    PROCESS_MEM_CONFIG.lock().allocated_amount()
 }
 
 pub fn additional_monitor_memory_init() -> Result<(), SvsmError> {

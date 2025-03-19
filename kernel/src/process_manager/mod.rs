@@ -1,5 +1,6 @@
 use memory_helper::set_ecryption_mask_address_size;
-use process_memory::additional_monitor_memory_init;
+use process::{alloc_bench};
+use process_memory::{additional_monitor_memory_init, preallocate_memory};
 pub use process::PROCESS_STORE;
 
 use crate::utils::immut_after_init::ImmutAfterInitCell;
@@ -12,9 +13,11 @@ pub mod memory_helper;
 pub mod allocation;
 pub mod memory_channels;
 pub mod outb;
+pub mod exception_handling;
 
 static MONITOR_INIT_STATE: ImmutAfterInitCell<bool> = ImmutAfterInitCell::new(false);
 const MONITOR_INIT_STATE_TRUE: bool = true;
+pub const PROCESS_STORE_SIZE: u32 = 128;
 
 pub fn monitor_init(){
     if *MONITOR_INIT_STATE {
@@ -23,6 +26,13 @@ pub fn monitor_init(){
     }
     set_ecryption_mask_address_size();
     let _ = additional_monitor_memory_init();
-    PROCESS_STORE.init(128);
+    PROCESS_STORE.init(PROCESS_STORE_SIZE);
     let _ = MONITOR_INIT_STATE.reinit(&MONITOR_INIT_STATE_TRUE);
+
+
+    #[cfg(feature = "alloc_bench")]
+    alloc_bench();
+
+    #[cfg(feature = "prealloc")]
+    preallocate_memory();
 }

@@ -9,6 +9,7 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use num_enum::TryFromPrimitive;
 use crate::address::PhysAddr;
+use crate::cpu::msr::rdtsc;
 use crate::process_manager::process_paging::{ProcessTableLevelMapping, TP_LIBOS_START_VADDR};
 use crate::{address::VirtAddr, cpu::{cpuid::{cpuid_table_raw, CpuidResult}, percpu::{this_cpu, this_cpu_unsafe}}, map_paddr, mm::{PerCPUPageMappingGuard, PAGE_SIZE}, paddr_as_slice, process_manager::{process::{ProcessID, TrustedProcess, PROCESS_STORE}, process_memory::allocate_page, process_paging::{GraminePalProtFlags, ProcessPageFlags, ProcessPageTableRef}}, protocols::{errors::SvsmReqError, RequestParams}, vaddr_as_u64_slice};
 use crate::process_manager::process_paging::ProcessPageTablePage;
@@ -29,6 +30,7 @@ const TRUSTLET_VMPL: u64 = 1;
 pub trait ProcessRuntime {
     fn handle_process_request(&mut self) -> bool;
     fn pal_svsm_virt_alloc(&mut self) -> bool;
+    fn pal_svsm_virt_free(&mut self) -> bool;
     fn pal_svsm_debug_print(&mut self) -> bool;
     fn pal_svsm_fail(&mut self) -> bool;
     fn pal_svsm_exit(&mut self) -> bool;
@@ -42,7 +44,11 @@ pub trait ProcessRuntime {
     fn handle_exception(&mut self) -> bool;
     fn handle_df(&mut self) -> bool;
     fn pal_svsm_call_outb(&mut self) -> bool;
+    fn pal_svsm_call_outb_with_value(&mut self) -> bool;
     fn pal_svsm_call_exit(&mut self) -> bool;
+    fn pal_svsm_inflate_channel(&mut self) -> bool;
+    fn pal_nop(&mut self) -> bool;
+    fn pal_svsm_finalize(&mut self) -> bool;
 }
 
 /// Invocation type of invokeTrustlet
@@ -149,6 +155,44 @@ pub struct PALContext {
     return_value: u64,
 }
 
+pub fn early_invoke(zygote: &'static mut TrustedProcess) {
+        //let zygote = PROCESS_STORE.get(ProcessID(id.try_into().unwrap()));
+
+    let vmsa_paddr = zygote.context.vmsa;
+    let vmsa_mapping = PerCPUPageMappingGuard::create_4k(zygote.context.vmsa).unwrap();
+    let vmsa: &mut VMSA = unsafe { vmsa_mapping.virt_addr().as_mut_ptr::<VMSA>().as_mut().unwrap() };
+
+    let mut string_buf: [u8;256] = [0;256];
+    let mut string_pos: usize = 0;
+    let sev_features = zygote.context.sev_features;
+    let apic_id = this_cpu().get_apic_id();
+
+    let mut rc = PALContext{
+        process: zygote,
+        vmsa,
+        string_buf,
+        string_pos,
+        // Only required for Trustlet
+        result_addr: 0,
+        result_size: 0,
+        guest_page_table: 0,
+        invocation_arg_guest_vaddr: 0,
+        invocation_arg_size: 0,
+        return_value: 0,
+    };
+
+    loop {
+        unsafe {(*(*this_cpu_unsafe()).ghcb).ap_create(vmsa_paddr,
+                                                       u64::from(apic_id),
+                                                       TRUSTLET_VMPL,
+                                                       sev_features).unwrap()}
+        if !rc.handle_process_request(){
+            break;
+        }
+    }
+
+}
+
 pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
 
     //log::debug!("Invoking Trustlet");
@@ -183,6 +227,9 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
 
     let invocation_arg_guest_vaddr = invoke_data_struct[5];
     let invocation_arg_size = invoke_data_struct[6] as usize;
+
+    //range.unmount();
+    //range.delete();
 
     let trustlet = PROCESS_STORE.get(ProcessID(id.try_into().unwrap()));
 
@@ -461,6 +508,15 @@ impl ProcessRuntime for PALContext  {
             0x4FFFFFF7 => {
                 return self.pal_svsm_guest_request();
             }
+            0x4FFFFFF6 => {
+                return self.pal_svsm_virt_free();
+            }
+            0x4FFFFFF5 => {
+                return self.pal_nop();
+            }
+            0x4FFFFFF4 => {
+                return self.pal_svsm_finalize();
+            }
             // monitor calls (other)
             0x4EFFFFFF => {
                 return self.handle_exception();
@@ -474,6 +530,12 @@ impl ProcessRuntime for PALContext  {
             }
             0x4FFFFFA1 => {
                 return self.pal_svsm_call_exit();
+            }
+            0x4FFFFFA2 => {
+                return self.pal_svsm_call_outb_with_value();
+            }
+            0x4FFFFFA3 => {
+                return self.pal_svsm_inflate_channel();
             }
             // debug
             99 => {
@@ -499,6 +561,22 @@ impl ProcessRuntime for PALContext  {
        
     }
 
+    fn pal_svsm_finalize(&mut self) -> bool {
+        //Finalize should mark every current page as finalizsed, e.g. read only
+        let page_table = self.vmsa.cr3;
+        let mut page_table_ref = ProcessPageTableRef::default();
+        page_table_ref.set_external_table(page_table);
+        page_table_ref.finalize_pages();
+        let rip = self.vmsa.rip;
+        log::info!("RIP: {:#x?}",rip);
+        log::info!("Fin done");
+        return false;
+    }
+
+    fn pal_nop(&mut self) -> bool {
+        return true;
+    }
+
     fn pal_svsm_call_exit(&mut self) -> bool {
         return false;
     }
@@ -508,6 +586,23 @@ impl ProcessRuntime for PALContext  {
         return true;
     }
 
+    fn pal_svsm_call_outb_with_value(&mut self) -> bool {
+        let value = self.vmsa.rcx;
+        outb(value);
+        return true;
+    }
+
+    fn pal_svsm_inflate_channel(&mut self) -> bool {
+        let select = self.vmsa.rcx;
+        let size = self.vmsa.rdx;
+        if select == 0 {
+            self.process.context.channel.inflate_input(self.vmsa.cr3, size as usize);
+        }
+        if select == 1 {
+            self.process.context.channel.inflate_output(self.vmsa.cr3, size as usize);
+        }
+        return true;
+    }
 
     /// Handle CPUID instruction from the trustlet
     /// 
@@ -562,8 +657,36 @@ impl ProcessRuntime for PALContext  {
         false
     }
 
+    /// Free virtual memory in the trustlet's page table
+    ///
+    /// Register arguments:
+    /// * rax: monitor call code ()
+    /// * rbx: trustlet's virtual address to free
+    /// *
+    fn pal_svsm_virt_free(&mut self) -> bool {
+        //log::info!("FREE");
+        let page_table = self.vmsa.cr3;
+        let mut page_table_ref = ProcessPageTableRef::default();
+        page_table_ref.set_external_table(page_table);
 
+        let addr = self.vmsa.rbx;
+        let size = self.vmsa.rcx;
 
+        //TODO: Check if Address can used
+
+        if size % 4096 != 0 {
+            self.vmsa.rcx = u64::from_ne_bytes((-1i64).to_ne_bytes());
+            return true;
+        }
+
+        if addr % 4096 != 0 {
+            self.vmsa.rcx = u64::from_ne_bytes((-1i64).to_ne_bytes());
+            return true;
+        }
+        page_table_ref.remove_pages(VirtAddr::from(addr), size / 4096);
+
+        return true;
+    }
 
     /// Allocate virtual memory in the trustlet's page table
     /// 
@@ -576,7 +699,6 @@ impl ProcessRuntime for PALContext  {
     /// Retrun:
     /// * rcx: 0 on success, -1 on failure
     fn pal_svsm_virt_alloc(&mut self) -> bool {
-
         // Getting the Page Table of the current Trustlet being executed
         let page_table = self.vmsa.cr3;
         let mut page_table_ref = ProcessPageTableRef::default();
@@ -598,7 +720,7 @@ impl ProcessRuntime for PALContext  {
             return true;
         }
         let mut page_flags = ProcessPageFlags::data();
-        if flags & GraminePalProtFlags::WRITE.bits() != 0{
+        if flags & GraminePalProtFlags::WRITE.bits() != 0 {
             page_flags = page_flags | ProcessPageFlags::WRITABLE;
         }
         /*
@@ -608,13 +730,12 @@ impl ProcessRuntime for PALContext  {
             page_flags = page_flags & !ProcessPageFlags::WRITABLE;
         }
         */
-        if flags & GraminePalProtFlags::EXEC.bits() != 0{
+        if flags & GraminePalProtFlags::EXEC.bits() != 0 {
             page_flags = page_flags & !ProcessPageFlags::NO_EXECUTE;
         }
-        //log::info!("Trying to allocate: {:#?}, {} {:?}", addr, size,page_flags);
+
         page_table_ref.add_pages(VirtAddr::from(addr), size / 4096, page_flags);
 
-        //log::info!("Allocated Memory");
         self.vmsa.rcx = u64::from_ne_bytes((0i64).to_ne_bytes());
 
         true
@@ -741,7 +862,7 @@ impl ProcessRuntime for PALContext  {
             flags |= ProcessPageFlags::WRITABLE;
         }
         if writecopy {
-            flags |= ProcessPageFlags::COPY_ON_WRITE;
+            //flags |= ProcessPageFlags::COPY_ON_WRITE;
             flags &= !ProcessPageFlags::WRITABLE;
         }
         if !executable {
@@ -1022,123 +1143,164 @@ impl ProcessRuntime for PALContext  {
     }
 
     /// Handle an exception occured in the trustlet
-    // XXX: Currently this function assumes that the exception is a #PF
     fn handle_exception(&mut self) -> bool {
-        let rip= self.vmsa.rip;
-        let cr2 = self.vmsa.cr2;
-        let error_code = self.vmsa.rbx;
-        const PF_PRESENT: u64 = 1 << 0;
-        const PF_WRITE: u64 = 1 << 1;
-        const PF_USER: u64 = 1 << 2;
-        const PF_RESERVED: u64 = 1 << 3;
-        const PF_INSTRUCTION: u64 = 1 << 4;
-        let mmap_manager = &self.process.mmap_manager;
-        log::debug!("[Trustlet] #PF: CR2=0x{:x}", cr2);
-        if let Some(mmap_info) = mmap_manager.lookup(cr2 as usize) {
-            log::debug!("Found file mapping: mmap_info={:?}", mmap_info);
-            if error_code & PF_PRESENT == 0 {
-                // non-presente page
-                log::debug!("[Trustlet] Page fault: not present page");
-                let target_page_addr = cr2 & !0xFFF;
-                self.process.pf_target_vaddr = target_page_addr;
-                assert!(target_page_addr >= mmap_info.addr as u64);
-                let addr_offset = target_page_addr - mmap_info.addr as u64;
-                assert!(addr_offset % 4096 == 0);
-
-                // guest arg structure:
-                // struct {
-                //   u64 fd;
-                //   u64 offset;
-                //   u64 size;
-                //   u64 addr_offset;
-                // }
-                let mut guest_page_table_ref = ProcessPageTableRef::default();
-                guest_page_table_ref.set_external_table(self.guest_page_table);
-                let arg_page = guest_page_table_ref.get_page(VirtAddr::from(self.invocation_arg_guest_vaddr));
-                let (_mapping, arg_mapping) = map_paddr!(arg_page);
-                let arg = unsafe { core::slice::from_raw_parts_mut(arg_mapping.as_mut_ptr::<u64>(), 4) };
-                arg[0] = mmap_info.fd as u64;
-                arg[1] = mmap_info.offset as u64;
-                arg[2] = mmap_info.size as u64;
-                arg[3] = addr_offset;
-
-                // make a guest request to load the page
-                self.return_value = TrustletReturnType::MMAP as u64;
+        let exception = self.vmsa.rcx;
+        match exception {
+            13 /* #GP */ => {
+                let cr2 = self.vmsa.cr2;
+                let error_code = self.vmsa.rbx;
+                let rsp = self.vmsa.rsp;
+                log::info!("[Trustlet] #GP: CR2=0x{:x}, error_code = {}", cr2, error_code);
+                let mut process_page_table_ref = ProcessPageTableRef::default();
+                process_page_table_ref.set_external_table(self.vmsa.cr3);
+                // dump stack
+                let stack_base_paddr = process_page_table_ref.get_page(VirtAddr::from(rsp));
+                let offset = (rsp & 0xFFF) / 8;
+                let (_mapping, stack_mapping) = map_paddr!(stack_base_paddr);
+                for i in 0..9 {
+                    log::info!("[Trustlet] Stack (rsp+{}): {:#x}", i*8, unsafe{stack_mapping.as_ptr::<u64>().offset((offset + i).try_into().unwrap()).read()});
+                }
+                let efer = self.vmsa.efer;
+                let rip = self.vmsa.rip;
+                let cr2 = self.vmsa.cr2;
+                let cr4 = self.vmsa.cr4;
+                let rsp = self.vmsa.rsp;
+                let rflags = self.vmsa.rflags;
+                let rdi = self.vmsa.rdi;
+                log::info!("vmsa EFER: {:?}", efer);
+                log::info!("vmsa CR2: {:?}", cr2);
+                log::info!("vmsa cr4: {:?}", cr4);
+                log::info!("vmsa rip: {:?}", rip);
+                log::info!("vmsa CS: {:?}", self.vmsa.cs);
+                log::info!("vmsa SS: {:?}", self.vmsa.ss);
+                log::info!("vmsa DS: {:?}", self.vmsa.ds);
+                log::info!("vmsa RFLAGS: {:?}", rflags);
+                log::info!("vmsa rsp: {:?}", rsp);
+                log::info!("vmsa rdi: {:?}", rdi);
+                log::info!("Unhandled #GP");
                 return false;
-            } else {
-                log::debug!("[Trustlet] #PF on present mmaped-page");
             }
-        } else {
-            log::debug!("[Trustlet] #PF: address is not mmaped-page");
-        }
-        if error_code & PF_PRESENT != 0 && error_code & PF_WRITE != 0 {
-             // CoW
-             let mut page_table_ref = ProcessPageTableRef::default();
-             page_table_ref.set_external_table(self.vmsa.cr3);
-             // Handle CoW
-             log::debug!("[Trustlet] CoW: RIP={:#x}, CR2={:#x}, Error code={:?}", rip, cr2, error_code);
-             let user_access = error_code & PF_USER != 0;
-             let handled = page_table_ref.handle_cow(VirtAddr::from(cr2), user_access);
-             if handled {
-                 log::debug!("[Trustlet] CoW: handled");
-                 return true;
-             }
-             log::debug!("[Trustlet] [BUG] CoW: not handled");
-        }
+            14 /* #PF */ => {
+                let rip= self.vmsa.rip;
+                let cr2 = self.vmsa.cr2;
+                let error_code = self.vmsa.rbx;
+                const PF_PRESENT: u64 = 1 << 0;
+                const PF_WRITE: u64 = 1 << 1;
+                const PF_USER: u64 = 1 << 2;
+                const PF_RESERVED: u64 = 1 << 3;
+                const PF_INSTRUCTION: u64 = 1 << 4;
+                let mmap_manager = &self.process.mmap_manager;
+                log::info!("[Trustlet] #PF: CR2=0x{:x}", cr2);
+                if let Some(mmap_info) = mmap_manager.lookup(cr2 as usize) {
+                    log::info!("Found file mapping: mmap_info={:?}", mmap_info);
+                    if error_code & PF_PRESENT == 0 {
+                        // non-presente page
+                        log::debug!("[Trustlet] Page fault: not present page");
+                        let target_page_addr = cr2 & !0xFFF;
+                        self.process.pf_target_vaddr = target_page_addr;
+                        assert!(target_page_addr >= mmap_info.addr as u64);
+                        let addr_offset = target_page_addr - mmap_info.addr as u64;
+                        assert!(addr_offset % 4096 == 0);
 
-        // XXX: it should not come here
-        // debug
-        let efer = self.vmsa.efer;
-        let rip = self.vmsa.rip;
-        let cr2 = self.vmsa.cr2;
-        let cr4 = self.vmsa.cr4;
-        let rsp = self.vmsa.rsp;
-        let rflags = self.vmsa.rflags;
-        log::info!("[Trustlet] [BUG] Unhandled Page Fault!");
-        log::info!("vmsa EFER: {:?}", efer);
-        log::info!("vmsa CR2: {:?}", cr2);
-        log::info!("vmsa cr4: {:?}", cr4);
-        log::info!("vmsa rip: {:?}", rip);
-        log::info!("vmsa CS: {:?}", self.vmsa.cs);
-        log::info!("vmsa SS: {:?}", self.vmsa.ss);
-        log::info!("vmsa DS: {:?}", self.vmsa.ds);
-        log::info!("vmsa RFLAGS: {:?}", rflags);
-        log::info!("vmsa rsp: {:?}", rsp);
-        let mut process_page_table_ref = ProcessPageTableRef::default();
-        process_page_table_ref.set_external_table(self.vmsa.cr3);
-        // dump stack
-        let stack_base_paddr = process_page_table_ref.get_page(VirtAddr::from(rsp));
-        let offset = (rsp & 0xFFF) / 8;
-        let (_mapping, stack_mapping) = map_paddr!(stack_base_paddr);
-        for i in 0..9 {
-            log::info!("[Trustlet] Stack (rsp+{}): {:#x}", i*8, unsafe{stack_mapping.as_ptr::<u64>().offset((offset + i).try_into().unwrap()).read()});
-        }
+                        // guest arg structure:
+                        // struct {
+                        //   u64 fd;
+                        //   u64 offset;
+                        //   u64 size;
+                        //   u64 addr_offset;
+                        // }
+                        let mut guest_page_table_ref = ProcessPageTableRef::default();
+                        guest_page_table_ref.set_external_table(self.guest_page_table);
+                        let arg_page = guest_page_table_ref.get_page(VirtAddr::from(self.invocation_arg_guest_vaddr));
+                        let (_mapping, arg_mapping) = map_paddr!(arg_page);
+                        let arg = unsafe { core::slice::from_raw_parts_mut(arg_mapping.as_mut_ptr::<u64>(), 4) };
+                        arg[0] = mmap_info.fd as u64;
+                        arg[1] = mmap_info.offset as u64;
+                        arg[2] = mmap_info.size as u64;
+                        arg[3] = addr_offset;
 
-        /*
-        // debug: allocate a page for the faulting address
-        let mut page_table_ref = ProcessPageTableRef::default();
-        page_table_ref.set_external_table(self.vmsa.cr3);
-        page_table_ref.add_pages(VirtAddr::from(cr2), 1, ProcessPageFlags::data());
-        return true;
-        */
+                        // make a guest request to load the page
+                        self.return_value = TrustletReturnType::MMAP as u64;
+                        return false;
+                    } else {
+                        log::info!("[Trustlet] #PF on present mmaped-page");
+                    }
+                } else {
+                    log::info!("[Trustlet] #PF: address is not mmaped-page");
+                }
+                if error_code & PF_PRESENT != 0 && error_code & PF_WRITE != 0 {
+                    // CoW
+                    let mut page_table_ref = ProcessPageTableRef::default();
+                    page_table_ref.set_external_table(self.vmsa.cr3);
+                    // Handle CoW
+                    log::debug!("[Trustlet] CoW: RIP={:#x}, CR2={:#x}, Error code={:?}", rip, cr2, error_code);
+                    let user_access = error_code & PF_USER != 0;
+                    let handled = page_table_ref.handle_cow(VirtAddr::from(cr2), user_access);
+                    if handled {
+                        log::debug!("[Trustlet] CoW: handled");
+                        return true;
+                    }
+                    log::info!("[Trustlet] [BUG] CoW: not handled");
+                }
 
-        log::info!("[Trustlet] #PF: RIP={:#x}, CR2={:#x}, Error code={:?}", rip, cr2, error_code);
-        if error_code & PF_PRESENT == 0 {
-            log::info!("[Trustlet] Page fault: not present");
+                // XXX: it should not come here
+                // debug
+                let efer = self.vmsa.efer;
+                let rip = self.vmsa.rip;
+                let cr2 = self.vmsa.cr2;
+                let cr4 = self.vmsa.cr4;
+                let rsp = self.vmsa.rsp;
+                let rflags = self.vmsa.rflags;
+                log::info!("[Trustlet] [BUG] Unhandled Page Fault!");
+                log::info!("vmsa EFER: {:?}", efer);
+                log::info!("vmsa CR2: {:?}", cr2);
+                log::info!("vmsa cr4: {:?}", cr4);
+                log::info!("vmsa rip: {:?}", rip);
+                log::info!("vmsa CS: {:?}", self.vmsa.cs);
+                log::info!("vmsa SS: {:?}", self.vmsa.ss);
+                log::info!("vmsa DS: {:?}", self.vmsa.ds);
+                log::info!("vmsa RFLAGS: {:?}", rflags);
+                log::info!("vmsa rsp: {:?}", rsp);
+                let mut process_page_table_ref = ProcessPageTableRef::default();
+                process_page_table_ref.set_external_table(self.vmsa.cr3);
+                // dump stack
+                let stack_base_paddr = process_page_table_ref.get_page(VirtAddr::from(rsp));
+                let offset = (rsp & 0xFFF) / 8;
+                let (_mapping, stack_mapping) = map_paddr!(stack_base_paddr);
+                for i in 0..9 {
+                    log::info!("[Trustlet] Stack (rsp+{}): {:#x}", i*8, unsafe{stack_mapping.as_ptr::<u64>().offset((offset + i).try_into().unwrap()).read()});
+                }
+
+                /*
+                // debug: allocate a page for the faulting address
+                let mut page_table_ref = ProcessPageTableRef::default();
+                page_table_ref.set_external_table(self.vmsa.cr3);
+                page_table_ref.add_pages(VirtAddr::from(cr2), 1, ProcessPageFlags::data());
+                return true;
+                 */
+
+                log::info!("[Trustlet] #PF: RIP={:#x}, CR2={:#x}, Error code={:?}", rip, cr2, error_code);
+                if error_code & PF_PRESENT == 0 {
+                    log::info!("[Trustlet] Page fault: not present");
+                }
+                if error_code & PF_WRITE != 0 {
+                    log::info!("[Trustlet] Page fault: write");
+                }
+                if error_code & PF_USER != 0 {
+                    log::info!("[Trustlet] Page fault: user");
+                }
+                if error_code & PF_RESERVED != 0 {
+                    log::info!("[Trustlet] Page fault: reserved");
+                }
+                if error_code & PF_INSTRUCTION != 0 {
+                    log::info!("[Trustlet] Page fault: instruction fetch");
+                }
+                false
+            }
+            _ => {
+                todo!();
+            }
         }
-        if error_code & PF_WRITE != 0 {
-            log::info!("[Trustlet] Page fault: write");
-        }
-        if error_code & PF_USER != 0 {
-            log::info!("[Trustlet] Page fault: user");
-        }
-        if error_code & PF_RESERVED != 0 {
-            log::info!("[Trustlet] Page fault: reserved");
-        }
-        if error_code & PF_INSTRUCTION != 0 {
-            log::info!("[Trustlet] Page fault: instruction fetch");
-        }
-        false
     }
 
     // handle double fault

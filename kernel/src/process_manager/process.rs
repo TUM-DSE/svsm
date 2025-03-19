@@ -1,10 +1,11 @@
 extern crate alloc;
 
-use core::arch::global_asm;
+//use core::arch::global_asm;
 use core::cell::UnsafeCell;
 use alloc::vec::Vec;
 use cpuarch::vmsa::VMSASegment;
 use igvm_defs::PAGE_SIZE_4K;
+use crate::cpu::msr::rdtsc;
 use crate::locking::{RWLock, ReadLockGuard, WriteLockGuard};
 use crate::address::PhysAddr;
 use crate::cpu::percpu::this_cpu_shared;
@@ -16,11 +17,14 @@ use crate::cpu::control_regs::read_cr3;
 use crate::mm::PAGE_SIZE;
 use crate::mm::pagetable::PageTableRef;
 use crate::mm::SVSM_PERCPU_VMSA_BASE;
-use crate::process_manager::process_memory::allocate_page;
+use crate::process_manager::process_memory;
+use crate::process_manager::PROCESS_STORE_SIZE;
+use crate::process_manager::process_memory::{allocate_page, free_page, ALLOCATION_RANGE_VIRT_START};
 use crate::process_manager::allocation::AllocationRange;
-use crate::process_manager::process_paging::{ProcessPageTableRef, TP_MANIFEST_START_VADDR};
+use crate::process_manager::process_paging::{ProcessPageTableEntry, ProcessPageTableRef};
 use crate::process_manager::process_paging::ProcessPageFlags;
-use crate::process_runtime::runtime::MmapManager;
+use crate::process_runtime::runtime::{early_invoke, MmapManager};
+use crate::protocols::errors::SvsmResultCode;
 use crate::protocols::errors::SvsmReqError;
 use crate::protocols::RequestParams;
 use crate::sev::RMPFlags;
@@ -38,8 +42,12 @@ use cpuarch::vmsa::VMSA;
 use core::mem::replace;
 
 use super::process_paging::{TP_STACK_START_VADDR,TP_KERN_STACK_START_VADDR};
+use super::process_paging::{TP_LIBOS_START_VADDR,TP_MANIFEST_START_VADDR};
 use super::memory_channels::MemoryChannel;
 use crate::attestation::monitor::{ProcessMeasurements, measure};
+
+use super::exception_handling::*;
+
 
 trait FromVAddr {
     fn from_virt_addr(v: VirtAddr) -> &'static mut VMSA;
@@ -76,7 +84,7 @@ impl TrustedProcessStore {
             processes: UnsafeCell::new(Vec::new()),
         }
     }
-    pub fn push(&self, process: TrustedProcess){
+    fn push(&self, process: TrustedProcess) {
         let ptr: &mut Vec<TrustedProcess> = unsafe { self.processes.get().as_mut().unwrap() };
         ptr.push(process);
     }
@@ -105,6 +113,10 @@ impl TrustedProcessStore {
         &mut ptr[pid.0]
     }
 
+    pub fn delete(&self, pid: ProcessID) {
+        let ptr: &mut Vec<TrustedProcess> = unsafe { self.processes.get().as_mut().unwrap() };
+        ptr[pid.0] = TrustedProcess::empty();
+    }
 }
 
 #[derive(Clone,Copy,Debug)]
@@ -127,6 +139,7 @@ pub struct TrustedProcess {
     pub process_type: TrustedProcessType,
     pub id: u64,
     pub parent_id: u64,
+    //#[cfg(feature = "attestation_benchmark")]
     pub base: ProcessBaseContext,
     pub measurements: ProcessMeasurements,
     #[allow(dead_code)]
@@ -152,35 +165,46 @@ impl TrustedProcess {
         let libos = zygote_data_struct[2];
         let libos_size= zygote_data_struct[5];
 
+        range.unmount();
+        range.delete();
 
-        // The allocation (AllocationRange) is always starting at the same virtual address which is why only one allocaiton is valid
-        // at the same time. TODO: Allow for different start addresses
+
         let mut base = ProcessBaseContext::default();
         let mut measurements = ProcessMeasurements::default();
 
         let (pal_data, pal_range) = ProcessPageTableRef::copy_data_from_guest(pal, pal_size, pgt);
+        log::debug!("pal_data {:?} pal_range {:?}", pal_data, pal_range);
         base.init_with_data(pal_data, pal_size, pal_range);
         measurements.init_measurement = measure(pal_data.into(), pal_size);
+        pal_range.unmount();
+        pal_range.delete();
         log::debug!("TODO: Compare with pal measurement of the policy");
 
         let (manifest_data, manifest_range) = ProcessPageTableRef::copy_data_from_guest(manifest, manifest_size, pgt);
+        log::debug!("manifest_range {:?}", manifest_range);
         base.add_manifest(manifest_data, manifest_size, manifest_range);
         measurements.manifest_measurement = measure(manifest_data.into(), manifest_size);
+        manifest_range.unmount();
+        manifest_range.delete();
         log::debug!("TODO: Compare with manifest measurement of the policy");
 
         let (libos_data, libos_range) = ProcessPageTableRef::copy_data_from_guest(libos, libos_size, pgt);
+        log::debug!("libos_range {:?}", libos_range);
         base.add_libos(libos_data, libos_size, libos_range);
         measurements.libos_measurement = measure(libos_data.into(), libos_size);
+        libos_range.unmount();
+        libos_range.delete();
         log::debug!("TODO: Compare with libos measurement of the policy");
 
-        // TODO: Free zygote data
+        let mut context = ProcessContext::default();
+        context.early_init(base, measurements);
         Self {
             process_type: TrustedProcessType::Zygote,
             id: 0,
             parent_id: 0,
             base,
             measurements,
-            context: ProcessContext::default(),
+            context,
             mmap_manager: MmapManager::new(),
             pf_target_vaddr: 0,
         }
@@ -191,7 +215,7 @@ impl TrustedProcess {
         let base: ProcessBaseContext = process.base;
         let measurements: ProcessMeasurements = process.measurements;
         let mut context = ProcessContext::default();
-        context.init(base, measurements);
+        context.init(base, measurements, process.context);
 
         TrustedProcess {
             process_type: TrustedProcessType::Trustlet,
@@ -211,6 +235,8 @@ impl TrustedProcess {
         let mut trustlet = TrustedProcess::dublicate(parent);
         if data != 0 {
             let (function_code, function_code_range) = ProcessPageTableRef::copy_data_from_guest(data, size, pgt);
+            trustlet.base.alloc_range_function.0 = function_code_range.0;
+            trustlet.base.alloc_range_function.1 = size;
 
             log::debug!("Measuring trustlet function");
             trustlet.measurements.function_measurement = measure(function_code.into(), size);
@@ -219,6 +245,7 @@ impl TrustedProcess {
             log::debug!("Adding trustlet function");
             let size = (4096 - (size & 0xFFF)) + size;
             trustlet.context.page_table_ref.add_function(function_code, size);
+            function_code_range.unmount();
             function_code_range.delete();
         }
         trustlet
@@ -236,11 +263,30 @@ impl TrustedProcess {
             pf_target_vaddr: 0,
         }
     }
+}
 
-    pub fn delete(&self) -> bool {
-        true
+impl Drop for TrustedProcess {
+    fn drop(&mut self) {
+        match self.process_type {
+            TrustedProcessType::Undefined => {}
+            TrustedProcessType::Zygote => {
+                self.base.page_table_ref.delete(&[]);
+                // self.context is empty for zygotes
+            }
+            TrustedProcessType::Trustlet => {
+                // do not delete self.base as this belongs to the zygote
+                self.context.page_table_ref.delete(&[
+                    idt_trustlet().base_limit().0.into(),
+                    (asm_entry_trustlet_pf as u64).into(),
+                    unsafe { &gdt_desc as *const u8 as u64 }.into(),
+                    tss_trustlet().base().into(),
+                    gdt_trustlet().base_limit().0.into()
+                ]); // nothing else for now
+                free_page(self.context.vmsa);
+                // input and output channels are deleted as part of page_table_ref
+            }
+        }
     }
-
 }
 
 pub fn check_vmsa_ind(new: &VMSA, sev_features: u64, svme_mask: u64, vmpl_level: u64) -> bool {
@@ -255,6 +301,8 @@ pub fn create_trusted_process(params: &mut RequestParams, t: TrustedProcessType)
     let process_addr = params.rdx;
     let guest_pgt = params.r8;
 
+    log::info!("allocated memory before creation: {}", process_memory::allocated_amount());
+
     match t {
         TrustedProcessType::Undefined => panic!("Invalid Creation Request"),
         TrustedProcessType::Zygote => {
@@ -265,11 +313,18 @@ pub fn create_trusted_process(params: &mut RequestParams, t: TrustedProcessType)
             // e.g. Copy the Zygote into memory
             // and parse it to create a page table
             let z: TrustedProcess = TrustedProcess::zygote(process_addr, size, guest_pgt);
+            //context.early_init(base, measurements);
+
+
 
             // Insert it into the process store
             // Each process is identified with an idea from
             // the store
             let res = PROCESS_STORE.insert(z);
+
+            let z = PROCESS_STORE.get(ProcessID(res.try_into().unwrap()));
+            early_invoke(z);
+
 
             // Copy the value to the return register
             // Conversion is required because the store
@@ -278,6 +333,7 @@ pub fn create_trusted_process(params: &mut RequestParams, t: TrustedProcessType)
             params.rcx = u64::from_ne_bytes(res.to_ne_bytes());
            
             log::debug!("Created Zygote #{}", params.rcx);
+            log::info!("allocated memory after zygote creation: {}", process_memory::allocated_amount());
             Ok(())
         },
         TrustedProcessType::Trustlet => {
@@ -299,6 +355,8 @@ pub fn create_trusted_process(params: &mut RequestParams, t: TrustedProcessType)
 
             let res = PROCESS_STORE.insert(trustlet);
             params.rcx = u64::from_ne_bytes(res.to_ne_bytes());
+
+            log::info!("allocated memory after trustlet creation: {}", process_memory::allocated_amount());
             Ok(())
 
         },
@@ -316,7 +374,24 @@ pub fn append_trusted_process(_params: &mut RequestParams) -> Result<(), SvsmReq
 pub fn delete_trusted_process(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let process_id = ProcessID(params.rcx as usize);
     let process = PROCESS_STORE.get(process_id);
-    process.delete();
+
+    if process.process_type == TrustedProcessType::Zygote {
+        for i in 0..PROCESS_STORE_SIZE {
+            if i as usize == process_id.0 {
+                continue;
+            }
+            let process = PROCESS_STORE.get(ProcessID(i as usize));
+            if process.process_type == TrustedProcessType::Trustlet {
+                if process.parent_id as usize == process_id.0 {
+                    return Err(SvsmReqError::RequestError(SvsmResultCode::INVALID_PARAMETER));
+                }
+            }
+        }
+    }
+
+    log::info!("allocated memory before deletion of {}: {}", process_id.0, process_memory::allocated_amount());
+    PROCESS_STORE.delete(process_id);
+    log::info!("allocated memory after deletion: {}", process_memory::allocated_amount());
     Ok(())
 }
 
@@ -352,6 +427,7 @@ pub struct ProcessBaseContext {
     pub alloc_range: AllocationRange,
     pub alloc_range_manifest: AllocationRange,
     pub alloc_range_libos: AllocationRange,
+    pub alloc_range_function: AllocationRange,
 }
 
 impl Default for ProcessBaseContext {
@@ -362,6 +438,7 @@ impl Default for ProcessBaseContext {
           alloc_range: AllocationRange(0,0),
           alloc_range_manifest: AllocationRange(0,0),
           alloc_range_libos: AllocationRange(0,0),
+          alloc_range_function: AllocationRange(0,0),
       }
   }
 }
@@ -374,20 +451,25 @@ impl ProcessBaseContext {
     }
 
     pub fn add_manifest(&mut self, manifest: VirtAddr, size: u64, data: AllocationRange) {
+        let orig_size = size;
         let size = (4096 - (size & 0xFFF)) + size;
         self.page_table_ref.add_manifest(manifest, size);
-        self.alloc_range_manifest = data;
+        //self.alloc_range_manifest.0 = data.0;
+        //self.alloc_range_manifest.1 = orig_size;
     }
 
     pub fn add_libos(&mut self, libos: VirtAddr, size: u64, data: AllocationRange){
+        let orig_size = size;
         let size = (4096 - (size & 0xFFF)) + size;
         self.page_table_ref.add_libos(libos,size);
-        self.alloc_range_libos = data;
+        //self.alloc_range_libos.0 = data.0;
+        //self.alloc_range_libos.1 = orig_size;
     }
 
     pub fn init_with_data(&mut self, elf: VirtAddr, size: u64, data: AllocationRange) {
         self.init(elf, size);
-        self.alloc_range = data;
+        //self.alloc_range.0 = data.0;
+        //self.alloc_range.1 = size;
     }
 
 }
@@ -419,125 +501,18 @@ impl Default for ProcessContext {
     }
 }
 
-// FIXME: Allocarte the GDT, IDT, and TSS in a dedicated page
-/// GDT for Trustlets (shared between all Trustlets)
-static GDT_TRUSTLET: RWLock<GDT> = RWLock::new(GDT::new());
-
-fn gdt_trustlet() -> ReadLockGuard<'static, GDT> {
-    GDT_TRUSTLET.lock_read()
-}
-
-fn gdt_trustlet_mut() -> WriteLockGuard<'static, GDT> {
-    GDT_TRUSTLET.lock_write()
-}
-
-/// IDT for Trustlets (shared between all Trustlets)
-static IDT_TRUSTLET: RWLock<IDT> = RWLock::new(IDT::new());
-
-fn idt_trustlet() -> ReadLockGuard<'static, IDT> {
-    IDT_TRUSTLET.lock_read()
-}
-
-fn idt_trustlet_mut() -> WriteLockGuard<'static, IDT> {
-    IDT_TRUSTLET.lock_write()
-}
-
-/// TSS for Trustlets
-// FIXME: the current implementation use the same TSS for all Trustlets. This works because
-// the only one Trustlet runs at a time.
-static TSS_TRUSTLET: RWLock<X86Tss> = RWLock::new(X86Tss::new());
-
-fn tss_trustlet() -> ReadLockGuard<'static, X86Tss> {
-    TSS_TRUSTLET.lock_read()
-}
-
-fn tss_trustlet_mut() -> WriteLockGuard<'static, X86Tss> {
-    TSS_TRUSTLET.lock_write()
-}
-
-global_asm!(
-    r#"
-    .align 4096
-    .code64
-    .section .text
-    .global asm_entry_trustlet_pf
-    asm_entry_trustlet_pf:
-       # #PF pushes the error code on the stack
-       pushq %rax
-       pushq %rbx
-       movq 16(%rsp), %rbx      # load error code
-       movq $0x4EFFFFFF, %rax   # monitor call number
-       cpuid                    # call the monitor
-
-       movq %cr2, %rax          # load faulting address
-       invlpg (%rax)            # invalidate the page
-
-       popq %rbx
-       popq %rax
-       addq $8, %rsp            # remove error code
-
-       iretq
-
-    .global asm_entry_trustlet_df
-    asm_entry_trustlet_df:
-       # #DF pushes the error code on the stack
-       pushq %rax
-       pushq %rbx
-       pushq %rcx
-       movq 24(%rsp), %rbx      # load error code
-       movq $0x4EFFFFFE, %rax   # monitor call number
-       sgdt gdt_desc(%rip)      # store current GDT
-       lea gdt_desc(%rip), %rcx
-       cpuid
-       /* no return */
-
-    # debug
-    .section .data
-    .global gdt_desc
-    gdt_desc:
-    .word gdt_entry_end - gdt_entry - 1 # 2 bytes for the GDT limit
-    .quad gdt_entry                     # 8 bytes for the GDT base address
-    .align 256
-    gdt_entry:
-    .quad 0x0000000000000000  # null
-    .quad 0x00af9b000000ffff  # code_64_kernel
-    .quad 0x00cf93000000ffff  # data_64_kernel
-    .quad 0x00affb000000ffff  # code_64_user
-    .quad 0x00cff3000000ffff  # data_64_user
-    .quad 0x0000000000000000  # null
-    .quad 0x0000000000000000  # tss
-    .quad 0xAAAAAAAAAAAAAAAA  # tss
-    gdt_entry_end:
-    "#,
-    options(att_syntax)
-);
-
-extern "C" {
-    fn asm_entry_trustlet_pf();
-    fn asm_entry_trustlet_df();
-    static gdt_desc: u8;
-}
-
 impl ProcessContext {
 
-    /// This function is called to create a Trustlet from a Zygote
-    pub fn init(&mut self, base: ProcessBaseContext, measurements: ProcessMeasurements) {
+    pub fn early_init(&mut self, base: ProcessBaseContext, measurements: ProcessMeasurements){
 
-        // Setup a new page table for the Process
-        // FIXME: this performs full deep copy of memory and page table from the base
-        // TODO:  implement proper CoW
-        let mut new_page_table_ref = ProcessPageTableRef::default();
-        new_page_table_ref.init_vmpl1();
-        new_page_table_ref.copy_from(&base.page_table_ref);
-        let page_table_ref = new_page_table_ref;
-        //let page_table_ref = base.page_table_ref;
+        let page_table_ref = base.page_table_ref;
 
-        //Creating new VMSA for the Process
+        // Create VMSA for Zygote
+        // Will be used as base for Trustlet VMSA
         let new_vmsa_page = allocate_page();
         let new_vmsa_mapping = PerCPUPageMappingGuard::create_4k(new_vmsa_page).unwrap();
         let new_vmsa_vaddr = new_vmsa_mapping.virt_addr();
 
-        //Permission Setup for VMSA
         rmp_adjust(new_vmsa_vaddr, RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
         rmp_set_guest_vmsa(new_vmsa_vaddr).unwrap();
         rmp_adjust(new_vmsa_vaddr, RMPFlags::VMPL1 | RMPFlags::VMSA, PageSize::Regular).unwrap();
@@ -558,153 +533,21 @@ impl ProcessContext {
         vmsa.sev_features = old_vmsa_ptr.sev_features | 4; // 4 is for #VC Reflect
         vmsa.rflags &= !(1u64 << 9); // Clear IF;
         // New Stack
-        vmsa.rbp = u64::from(TP_STACK_START_VADDR)+8*4096-1;
-        vmsa.rsp = u64::from(TP_STACK_START_VADDR)+8*4096-1;
+        vmsa.rbp = u64::from(TP_STACK_START_VADDR)+8*4096;
+        vmsa.rsp = u64::from(TP_STACK_START_VADDR)+8*4096;
 
-        // ---
+
         // Setup exception handlers
-
-        let mut svsm_page_table_ref = ProcessPageTableRef::default();
-        svsm_page_table_ref.set_external_table(read_cr3().into());
-
-        // disable SMAP/SMEP to execute the handler in ring0
-        // FIXME: propery setup the page flags for the handler
-        vmsa.cr4 = vmsa.cr4 & !(1u64 << 20 | 1u64 << 21);
-
-        log::debug!("asm_entry_trustlet_pf: {:x}", asm_entry_trustlet_pf as u64);
-        log::debug!("asm_entry_trustlet_df: {:x}", asm_entry_trustlet_df as u64);
-        log::debug!("gdt_desc: {:x}", unsafe { &gdt_desc as *const u8 as u64 });
-
-        // setup IDT
-        // 1. setup IDT entry for #PF, #DF
-        idt_trustlet_mut().set_entry(PF_VECTOR, IdtEntry::trap_entry(asm_entry_trustlet_pf));
-        idt_trustlet_mut().set_entry(DF_VECTOR, IdtEntry::entry(asm_entry_trustlet_df));
-        //idt_trustlet_mut().set_entry(GP_VECTOR, IdtEntry::trap_entry(asm_entry_trustlet_df));
-        // 2. rmpadjust for IDT and handlers
-        let (idt_base, limit) = idt_trustlet().base_limit();
-        rmp_adjust(idt_base.into(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
-        rmp_adjust((asm_entry_trustlet_pf as u64).into(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
-        rmp_adjust((unsafe { &gdt_desc as *const u8 as u64 }).into(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
-        // 3. map IDT and handlers to trustlet's page table
-        let idt_phys = svsm_page_table_ref.virt_to_phys(idt_base.into());
-        let handler_phys = svsm_page_table_ref.virt_to_phys((asm_entry_trustlet_pf as u64).into());
-        let gdt_desc_phys = svsm_page_table_ref.virt_to_phys((unsafe { &gdt_desc as *const u8 as u64 }).into());
-        assert!(idt_phys != PhysAddr::null());
-        assert!(handler_phys != PhysAddr::null());
-        assert!(gdt_desc_phys != PhysAddr::null());
-        // FIXME: this assertion is to check the virtual address is available, but this page could
-        // be also used by GDT/TSS and in that case the assertion will fail. Currently IDT and TSS
-        // is aligend to 4KB boundary to about this issue. Fix this by properly allocating and
-        // managing the page for IDT, TSS and GDT.
-        assert!(page_table_ref.virt_to_phys(idt_base.into()) == PhysAddr::null());
-        assert!(page_table_ref.virt_to_phys((asm_entry_trustlet_pf as u64).into()) == PhysAddr::null());
-        assert!(page_table_ref.virt_to_phys((unsafe { &gdt_desc as *const u8 as u64 }).into()) == PhysAddr::null());
-        page_table_ref.map_4k_page(idt_base.into(), idt_phys, ProcessPageFlags::exec());
-        page_table_ref.map_4k_page((asm_entry_trustlet_pf as u64).into(), handler_phys, ProcessPageFlags::exec());
-        page_table_ref.map_4k_page((unsafe { &gdt_desc as *const u8 as u64 }).into(), gdt_desc_phys, ProcessPageFlags::data());
-        // 4. setup IDT segment in VMSA
-        let vmsa_idt = VMSASegment {
-            selector: 0,
-            flags: 0x0,
-            base: idt_base,
-            limit: limit-1,
-        };
-        vmsa.idt = vmsa_idt;
-
-        // setup TSS
-        let mut tss = tss_trustlet_mut();
-        let tss_base = tss.base();
-        let num_page = 1;
-        // 1. setup kernel stack address
-        tss.stacks[0] = (TP_KERN_STACK_START_VADDR + 4096*num_page-16).into();
-        // 2. map the stack address to trustlet's page table
-        page_table_ref.add_stack(TP_KERN_STACK_START_VADDR.into(), num_page);
-        // 3. map the TSS to trustlet's page table
-        let tss_phys = svsm_page_table_ref.virt_to_phys(tss_base.into());
-        assert!(tss_phys != PhysAddr::null());
-        assert!(page_table_ref.virt_to_phys(tss_base.into()) == PhysAddr::null());
-        page_table_ref.map_4k_page(tss_base.into(), tss_phys, ProcessPageFlags::data());
-        // 4. rmpadjust for TSS
-        rmp_adjust(tss_base.into(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
-        let vmsa_tss = VMSASegment {
-            selector: 6*8,
-            flags: 0x89, // TSS
-            base: tss_base,
-            limit: TSS_LIMIT as u32-1,
-        };
-        vmsa.tr = vmsa_tss;
-
-        // setup GDT
-        // GDT entreies:
-        // 0. null
-        // 1. code_64_kernel
-        // 2. data_64_kernel
-        // 3. code_64_user
-        // 4. data_64_user
-        // 5. null
-        // 6-7. TSS
-        let (desc0, desc1) = tss.to_gdt_entry();
-        unsafe{
-            // this sets the entry 6 for TSS
-            gdt_trustlet_mut().set_tss_entry(desc0, desc1);
-        }
-        let (base_gdt, limit) = gdt_trustlet().base_limit();
-        log::debug!("GDT base: {:x}, limit: {:x}", base_gdt, limit);
-        // 1. rmpadjust for GDT
-        rmp_adjust(base_gdt.into(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
-        // 2. map GDT to trustlet's page table
-        let gdt_phys = svsm_page_table_ref.virt_to_phys(base_gdt.into());
-        assert!(gdt_phys != PhysAddr::null());
-        // FIXME: currently use the same virtual address as the SVSM for the trustlet
-        assert!(page_table_ref.virt_to_phys(base_gdt.into()) == PhysAddr::null());
-        page_table_ref.map_4k_page(base_gdt.into(), gdt_phys, ProcessPageFlags::data());
-        // 3. setup GDT segment in VMSA
-        let vmsa_gdt = VMSASegment {
-            selector: 0,
-            flags: 0,
-            base: base_gdt,
-            limit: limit,
-        };
-        vmsa.gdt = vmsa_gdt;
-
-        let cs = VMSASegment {
-            selector: 3*8 | 0x3,
-            flags: 0xAFB, // user, code, 4KB granularity, 64-bit
-            base: 0,
-            limit: 0xFFFF_FFFF,
-        };
-        let ds = VMSASegment {
-            selector: 4*8 | 0x3,
-            flags: 0xCF3, // user, data, 4KB granularity, 64-bit
-            base: 0,
-            limit: 0xFFFF_FFFF,
-        };
-
-        vmsa.cs = cs;
-        vmsa.ds = ds;
-        vmsa.es = ds;
-        vmsa.fs = ds;
-        vmsa.ss = ds;
-
-        let efer = vmsa.efer;
-        let cr4 = vmsa.cr4;
-        let rflags = vmsa.rflags;
-        log::debug!("vmsa EFER: {:?}", efer);
-        log::debug!("vmsa cr4: {:?}", cr4);
-        log::debug!("vmsa CS: {:?}", vmsa.cs);
-        log::debug!("vmsa SS: {:?}", vmsa.ss);
-        log::debug!("vmsa DS: {:?}", vmsa.ds);
-        log::debug!("vmsa rflags: {:?}", rflags);
+        setup_exceptions(vmsa, &page_table_ref);
 
         // ------ end of exception handlers setup
 
-        //Check VMSA
         let svme_mask: u64 = 1u64 << 12;
         if !check_vmsa_ind(vmsa, vmsa.sev_features, svme_mask, RMPFlags::VMPL1.bits()) {
-            log::info!("VMSA Check failed");
-            log::info!("Bits: {}",vmsa.vmpl == RMPFlags::VMPL1.bits() as u8);
-            log::info!("Efer & vsme_mask: {}", vmsa.efer & svme_mask == svme_mask);
-            log::info!("SEV features: {}", vmsa.sev_features == vmsa.sev_features);
+            log::debug!("VMSA Check failed");
+            log::debug!("Bits: {}",vmsa.vmpl == RMPFlags::VMPL1.bits() as u8);
+            log::debug!("Efer & vsme_mask: {}", vmsa.efer & svme_mask == svme_mask);
+            log::debug!("SEV features: {}", vmsa.sev_features == vmsa.sev_features);
             panic!("Failed to create new VMSA");
         }
 
@@ -716,6 +559,51 @@ impl ProcessContext {
         self.channel.allocate_input(&mut pptr, PAGE_SIZE);
         self.channel.allocate_output(&mut pptr, PAGE_SIZE);
 
+        self.vmsa = new_vmsa_page;
+        self.sev_features = vmsa.sev_features;
+        //self.base = base;
+        self.measurements = measurements;
+        self.page_table_ref = page_table_ref;
+
+
+    }
+
+    /// This function is called to create a Trustlet from a Zygote
+    pub fn init(&mut self, base: ProcessBaseContext, measurements: ProcessMeasurements, zygote_context: ProcessContext) {
+
+        // Setup a new page table for the Process
+        let mut new_page_table_ref = ProcessPageTableRef::default();
+        new_page_table_ref.init_vmpl1();
+        new_page_table_ref.copy_pgd(&zygote_context.page_table_ref);
+        let page_table_ref = new_page_table_ref;
+
+        //Creating new VMSA for the Process
+        let new_vmsa_page = allocate_page();
+        let new_vmsa_mapping = PerCPUPageMappingGuard::create_4k(new_vmsa_page).unwrap();
+        let new_vmsa_vaddr = new_vmsa_mapping.virt_addr();
+
+        //Permission Setup for VMSA
+        rmp_adjust(new_vmsa_vaddr, RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
+        rmp_set_guest_vmsa(new_vmsa_vaddr).unwrap();
+        rmp_adjust(new_vmsa_vaddr, RMPFlags::VMPL1 | RMPFlags::VMSA, PageSize::Regular).unwrap();
+
+        //Guest VMSA -> New VMSA
+        let vmsa = VMSA::from_virt_addr(new_vmsa_vaddr);
+        let zygote_vmsa_mapping = PerCPUPageMappingGuard::create_4k(zygote_context.vmsa).unwrap();
+        let zygote_vmsa_vaddr = zygote_vmsa_mapping.virt_addr();
+        let zygote_vmsa = VMSA::from_virt_addr(zygote_vmsa_vaddr);
+        *vmsa = *zygote_vmsa;
+
+        //Trustlet VMSA Setup
+        vmsa.cr3 = u64::from(page_table_ref.process_page_table);
+
+        //Memory Channel setup -- No chain setup here
+        let page_table_addr = vmsa.cr3;
+        let mut pptr = ProcessPageTableRef::default();
+        pptr.set_external_table(page_table_addr);
+        self.channel.allocate_input(&mut pptr, PAGE_SIZE);
+        self.channel.allocate_output(&mut pptr, PAGE_SIZE);
+        pptr.handle_cow(VirtAddr::from(TP_KERN_STACK_START_VADDR), false);
 
         self.vmsa = new_vmsa_page;
         self.sev_features = vmsa.sev_features;
@@ -745,3 +633,109 @@ impl ProcessContext {
 
 }
 
+pub fn alloc_bench() {
+    let mut pgt = ProcessPageTableRef::default();
+    pgt.init();
+
+    let t0 = 0;
+    let t1 = 0;
+    let t2 = 0;
+    let t3 = 0;
+
+    let mapping_address: u64 = 0x1000u64;
+    let page = allocate_page();
+    free_page(u64::from(page).into());
+
+    let mut pages: [u64;100] = [0; 100];
+
+    let mut sum1 = 0;
+    let mut t1 = 0;
+    let mut t2 = 0;
+
+    for i in 0..10 {
+        t1 = rdtsc();
+        pages[i] = u64::from(allocate_page());
+        t2 = rdtsc();
+        sum1 += t2 - t1;
+    }
+
+    let mut sum2 = 0;
+
+    for i in 0..10 {
+        t1 = rdtsc();
+        free_page(pages[i].into());
+        t2 = rdtsc();
+        sum2 += t2 - t1;
+    }
+
+    let mut sum3 = 0;
+
+    for i in 0..10 {
+        t1 = rdtsc();
+        pages[i] = u64::from(allocate_page());
+        t2 = rdtsc();
+        sum3 += t2 - t1;
+    }
+    let mut sum4 = 0;
+    for i in 0..10 {
+        t1 = rdtsc();
+        let page = u64::from(allocate_page());
+        pgt.map_4k_page(VirtAddr::from(mapping_address*(i+1)), PhysAddr::from(page), ProcessPageFlags::empty());
+        t2 = rdtsc();
+        sum4 += t2 - t1;
+    }
+
+    for i in 0..100 {
+        pages[i] = u64::from(allocate_page());
+    }
+    for i in 0..100 {
+        free_page(pages[i].into());
+    }
+
+    let mut sum5 = 0;
+    for i in 10..20 {
+        t1 = rdtsc();
+        let page = u64::from(allocate_page());
+        pgt.map_4k_page(VirtAddr::from(mapping_address*(i)), PhysAddr::from(page), ProcessPageFlags::empty());
+        t2 = rdtsc();
+        sum5 += t2 - t1;
+    }
+
+    log::info!("\nAlloc1: {}\nFree: {}\nAlloc2: {}\nMap1: {}\nMap2: {}", sum1, sum2, sum3, sum4, sum5);
+
+    test_rmp_adjust();
+
+    panic!();
+}
+
+fn test_rmp_adjust() {
+    let mut t1 = 0;
+    let mut t2 = 0;
+    let mut pages: [u64;10] = [0; 10];
+
+    let mut sum1 = 0;
+
+    for i in 0..10 {
+        pages[i] = u64::from(allocate_page());
+        let mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(pages[i])).unwrap();
+        let vaddr = mapping.virt_addr();
+        t1 = rdtsc();
+        rmp_adjust(vaddr, RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular);
+        t2 = rdtsc();
+        sum1 += t2 - t1;
+    }
+    sum1 = sum1;
+
+    let mut sum2 = 0;
+
+    for i in 0..10 {
+        t1 = rdtsc();
+        let mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(pages[i])).unwrap();
+        let vaddr = mapping.virt_addr();
+        rmp_adjust(vaddr, RMPFlags::VMPL1 | RMPFlags::NONE, PageSize::Regular);
+        t2 = rdtsc();
+        sum2 += t2 - t1;
+    }
+
+    log::info!("Add access: {}\nRemove access: {}", sum1, sum2);
+}
