@@ -773,7 +773,6 @@ impl ProcessPageTableRef {
             (_pte_mapping, pte_table) = paddr_as_table!(strip_paddr!(pmd_table[pmd_idx].0));
 
             while c < count && pte_idx < 512 {
-                log::info!("Allocating page: {:#x?}", current_addr);
                 let page = pte_table[pte_idx];
                 if page.flags().contains(ProcessPageFlags::PRESENT) {
                     log::error!("Trying to reallocate already existing address: {:#x?}", page.0);
@@ -788,7 +787,6 @@ impl ProcessPageTableRef {
                 _ = replace(s, ZERO_PAGE);
                 rmp_adjust(mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
                 pte_table[pte_idx].set(new_page, flags);
-                log::info!("{:#x?}", pte_table[pte_idx].0);
                 pte_idx += 1;
                 c += 1;
                 current_addr = current_addr + PAGE_SIZE;
