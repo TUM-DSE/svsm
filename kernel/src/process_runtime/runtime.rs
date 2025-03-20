@@ -14,8 +14,9 @@ use crate::process_manager::process_paging::{ProcessTableLevelMapping, TP_LIBOS_
 use crate::{address::VirtAddr, cpu::{cpuid::{cpuid_table_raw, CpuidResult}, percpu::{this_cpu, this_cpu_unsafe}}, map_paddr, mm::{PerCPUPageMappingGuard, PAGE_SIZE}, paddr_as_slice, process_manager::{process::{ProcessID, TrustedProcess, PROCESS_STORE}, process_memory::allocate_page, process_paging::{GraminePalProtFlags, ProcessPageFlags, ProcessPageTableRef}}, protocols::{errors::SvsmReqError, RequestParams}, vaddr_as_u64_slice};
 use crate::process_manager::process_paging::ProcessPageTablePage;
 use crate::process_manager::outb::outb;
+use crate::protocols::errors::SvsmResultCode;
 
-use crate::{paddr_as_table, vaddr_as_slice};
+use crate::{debug, paddr_as_table, vaddr_as_slice};
 use crate::types::PageSize;
 use crate::sev::RMPFlags;
 use crate::sev::rmp_adjust;
@@ -59,6 +60,7 @@ enum TrustletInvocationType {
     OPEN=2,
     READ=3,
     MMAP=4,
+    READ2=5,
 }
 
 /// Return value to the guest from invokeTrustlet
@@ -72,6 +74,7 @@ enum TrustletReturnType {
     OPEN=4,
     READ=5,
     MMAP=6,
+    READ2=7,
 }
 
 /// Guest request type from the trustlet (PAL)
@@ -81,6 +84,7 @@ enum PalSvsmGuestRequestType {
     FILEATTR=0,
     OPEN=1,
     READ=2,
+    READ2=3,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,7 +195,7 @@ pub fn early_invoke(zygote: &'static mut TrustedProcess) {
 
 pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
 
-    log::debug!("Invoking Trustlet");
+    //log::debug!("Invoking Trustlet");
 
     let id = params.rcx;
 
@@ -268,6 +272,77 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
                 data[i] = arg[i];
             }
         }
+        TrustletInvocationType::READ2 => {
+            log::debug!("GuestRequest: Read2");
+            // struct {
+            //   uint64_t ptr; // pointer to the guest memory that holds the data
+            //   uint64_t bufsize; // size of the buffer
+            //   uint64_t count; // number of bytes to read
+            //   uint64_t offset; // unused
+            //   uint64_t fd; //unused
+            // }
+
+            // map the guest's arg
+            let mut guest_page_table_ref = ProcessPageTableRef::default();
+            guest_page_table_ref.set_external_table(guest_page_table);
+            let arg_page = guest_page_table_ref.get_page(VirtAddr::from(invocation_arg_guest_vaddr));
+            let (_mapping, arg_mapping) = map_paddr!(arg_page);
+            let guest_arg = unsafe { core::slice::from_raw_parts_mut(arg_mapping.as_mut_ptr::<u64>(), 3) };
+
+            // map the trustlets's arg
+            let data_ptr = vmsa.rcx;
+            log::debug!("GuestRequest: Read2: data_ptr: 0x{:x}", data_ptr);
+            let mut page_table_ref = ProcessPageTableRef::default();
+            page_table_ref.set_external_table(vmsa.cr3);
+            let data_page = page_table_ref.get_page(VirtAddr::from(data_ptr));
+            let offset = (data_ptr & 0xFFF) as usize;
+            let (_mapping, data_mapping) = map_paddr!(data_page);
+            assert!(offset + invocation_arg_size <= PAGE_SIZE_4K as usize, "Data size exceeds page size");
+            let arg = unsafe { core::slice::from_raw_parts_mut(data_mapping.as_mut_ptr::<u64>().wrapping_add(offset), 3) };
+
+            let trustlet_buf_addr = trustlet.context.read_request_ptr;
+            let trustlet_buf_size = trustlet.context.read_request_buf_size;
+            let guest_buf_addr = guest_arg[0];
+            let guest_buf_size = guest_arg[1];
+            let guest_read_count = guest_arg[2];
+            if guest_read_count == u64::MAX {
+                // guest read error
+                // TODO: handle error
+                log::debug!("GuestRequest: Read2: guest_read_count is -1");
+            }
+            //arg[2] = guest_read_count; // FIXME: this causes #PF, why?
+            log::debug!("GuestRequest: Read2: guest_read_count: {}", guest_read_count);
+            log::debug!("GuestRequest: Read2: guest_buf_addr: 0x{:x}", guest_buf_addr);
+            log::debug!("GuestRequest: Read2: guest_read_count: {}", guest_read_count);
+            log::debug!("GuestRequest: Read2: trustlet_buf_addr: 0x{:x}", trustlet_buf_addr);
+            log::debug!("GuestRequest: Read2: trustlet_buf_size: {}", trustlet_buf_size);
+            assert!(guest_buf_size >= guest_read_count, "Guest buffer size is smaller than read count: {} {}", guest_buf_size, guest_read_count);
+            assert!(trustlet_buf_size >= guest_read_count, "Trustlet buffer size is smaller than read count: {} {}", trustlet_buf_size, guest_read_count);
+            assert!(guest_buf_addr % 4096 == 0, "Guest buffer address is not page aligned");
+            assert!(trustlet_buf_addr % 4096 == 0, "Trustlet buffer address is not page aligned");
+
+            let page_num = (guest_read_count + 4095) / 4096;
+            // copy the data from the guest buffer to the trustlet buffer
+            for i in 0..page_num {
+                let copy_size = core::cmp::min(4096, guest_read_count - i * 4096) as usize;
+                let guest_page = guest_page_table_ref.get_page(VirtAddr::from(guest_buf_addr + i * 4096));
+                let (_mapping, guest_mapping) = map_paddr!(guest_page);
+                let guest_buf = unsafe { core::slice::from_raw_parts_mut(guest_mapping.as_mut_ptr::<u8>(), copy_size) };
+                let trustlet_page = page_table_ref.get_page(VirtAddr::from(trustlet_buf_addr + i * 4096));
+                let (_mapping, trustlet_mapping) = map_paddr!(trustlet_page);
+                let trustlet_buf = unsafe { core::slice::from_raw_parts_mut(trustlet_mapping.as_mut_ptr::<u8>(), copy_size) };
+                //log::debug!("GuestRequest: Read2: copy page {}/{}", i, page_num);
+                // log::debug!("GuestRequest: Read2: guest_page: 0x{:x}", guest_page);
+                // log::debug!("GuestRequest: Read2: trustlet_page: 0x{:x}", trustlet_page);
+                // log::debug!("trutlet_buf[0]=0x{:x}", trustlet_buf[0]);
+                // log::debug!("guest_buf[0]=0x{:x}", guest_buf[0]);
+                // log::debug!("GuestRequest: Read2: page={}, copy_size: {}", i, copy_size);
+                for j in 0..copy_size {
+                    trustlet_buf[j] = guest_buf[j];
+                }
+            }
+            log::debug!("GuestRequest: Read2: copied data, read count: {}", guest_read_count);
+        }
         TrustletInvocationType::MMAP => {
             // Handle page fault due to the mmap
             let mut guest_page_table_ref = ProcessPageTableRef::default();
@@ -304,7 +379,7 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
             // update trustlet's page table
             let flags = ProcessPageFlags::FLAG_REUSE;
             page_table_ref.map_4k_page(dst, new_page, flags);
-            log::info!("Mapped new page for the trustlet at 0x{:x}", trustlet.pf_target_vaddr);
+            log::debug!("Mapped new page for the trustlet at 0x{:x}", trustlet.pf_target_vaddr);
         }
     }
 
@@ -341,7 +416,7 @@ pub fn create_channel(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let tid1 = params.rcx;
     let tid2 = params.rdx;
 
-    log::info!("Creating Channel: tid={} tid={}", tid1, tid2);
+    log::debug!("Creating Channel: tid={} tid={}", tid1, tid2);
 
     // map tid1's output channel to tid2's input channel
 
@@ -364,8 +439,8 @@ pub fn create_channel(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let trustlet2_pgd_table = vaddr_as_u64_slice!(trustlet2_cr3_mapping.virt_addr());
     let trustlet2_input_channel_pgd_idx = addr_to_idx(INPUT_VADDR as usize, PGD);
 
-    log::info!("trustlet1_output_channel_pgd_idx: 0x{:x}", trustlet1_output_channel_pgd_idx);
-    log::info!("trustlet2_input_channel_pgd_idx: 0x{:x}", trustlet2_input_channel_pgd_idx);
+    log::debug!("trustlet1_output_channel_pgd_idx: 0x{:x}", trustlet1_output_channel_pgd_idx);
+    log::debug!("trustlet2_input_channel_pgd_idx: 0x{:x}", trustlet2_input_channel_pgd_idx);
 
     // Update trustlet2's pgd entry
     //  Trustlet1 CR3 -> PGD [OUTPUT_VADDR] -> <PUD A> -> ...
@@ -781,6 +856,7 @@ impl ProcessRuntime for PALContext  {
         let writable = (flags & GraminePalProtFlags::WRITE.bits()) != 0;
         let executable = (flags & GraminePalProtFlags::EXEC.bits()) != 0;
         let writecopy = (flags & GraminePalProtFlags::WRITECOPY.bits()) != 0;
+        let populate = (flags & GraminePalProtFlags::POPULATE.bits()) != 0;
         let mut flags = ProcessPageFlags::USER_ACCESSIBLE | ProcessPageFlags::ACCESSED;
         if writable {
             flags |= ProcessPageFlags::WRITABLE;
@@ -867,9 +943,21 @@ impl ProcessRuntime for PALContext  {
 
         // Allocate virtul memory address
         // The actual content is loaded upon #PF
+        if populate {
+            flags |= ProcessPageFlags::PRESENT;
+        }
         for i in 0..num_pages {
             let dst = vaddr + (i * PAGE_SIZE_4K).try_into().unwrap(); 
-            page_table_ref.map_4k_page(dst, PhysAddr::new(0), flags);
+            let phys_addr = if populate {
+                // allocate new physical page
+                let page = allocate_page();
+                let (mapping, page_mapped) = paddr_as_slice!(page);
+                rmp_adjust(mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX , PageSize::Regular).unwrap();
+                page
+            } else  {
+                PhysAddr::new(0)
+            };
+            page_table_ref.map_4k_page(dst, phys_addr, flags)
         }
 
         self.vmsa.rcx = u64::from_ne_bytes((0i64).to_ne_bytes());
@@ -906,6 +994,9 @@ impl ProcessRuntime for PALContext  {
         let writable = flags & GraminePalProtFlags::WRITE.bits() != 0;
         let executable = flags & GraminePalProtFlags::EXEC.bits() != 0;
         let writecopy = flags & GraminePalProtFlags::WRITECOPY.bits() != 0;
+        let populate = flags & GraminePalProtFlags::POPULATE.bits() != 0;
+
+        assert!(populate == false, "POPULATE is not supported yet");
 
         // FIXME: this walks the page table every time. we can optimize this by updating entries while walking
         for i in 0..page_num {
@@ -986,10 +1077,15 @@ impl ProcessRuntime for PALContext  {
     /// This function does not return to the trustle but return to the guest.
     /// The guest will call another invokeTruslet() after completing the request.
     fn pal_svsm_guest_request(&mut self) -> bool {
+        let rbx = self.vmsa.rbx;
+        let rcx = self.vmsa.rcx;
+        let rdx = self.vmsa.rdx;
+        log::debug!("pal_svms_guest_request: rbx={:#x}, rcx={:#x}, rdx={:#x}", rbx, rcx, rdx);
+
         let request_type: PalSvsmGuestRequestType = self.vmsa.rbx.try_into().unwrap();
         let data_ptr = self.vmsa.rcx;
         let data_size = self.vmsa.rdx as usize;
-        assert!(data_size <= self.invocation_arg_size, "Data size exceeds the invocation arg size");
+        assert!(data_size <= self.invocation_arg_size, "Data size exceeds the invocation arg size: {} > {}", data_size, self.invocation_arg_size);
 
         let page_table = self.vmsa.cr3;
         let mut page_table_ref = ProcessPageTableRef::default();
@@ -1000,7 +1096,7 @@ impl ProcessRuntime for PALContext  {
         let data_page = page_table_ref.get_page(VirtAddr::from(data_ptr));
         let offset = (data_ptr & 0xFFF) as usize;
         let (_mapping, data_mapping) = map_paddr!(data_page);
-        assert!(offset + data_size <= PAGE_SIZE_4K as usize, "Data size exceeds page size");
+        assert!(offset + data_size <= PAGE_SIZE_4K as usize, "Data size exceeds page size: offset({}) + data_size({}) = {} > {}", offset, data_size, offset + data_size, PAGE_SIZE_4K as usize);
         let data = unsafe { core::slice::from_raw_parts(data_mapping.as_ptr::<u8>().wrapping_add(offset), data_size) };
 
         // copy the path into the guest arg struct
@@ -1011,6 +1107,22 @@ impl ProcessRuntime for PALContext  {
         let arg = unsafe { core::slice::from_raw_parts_mut(arg_mapping.as_mut_ptr::<u8>(), self.invocation_arg_size) };
         for i in 0..data_size {
             arg[i] = data[i];
+        }
+
+        if request_type == PalSvsmGuestRequestType::READ2 {
+            // this request contains the pointer to the trustlet's memory where the data will be copied
+            // we must keep this address to copy the data back to the trustlet at the next invocation
+            // data[0..8] contains the address
+            // data[8..16] contains the size
+            let mut addr = [0u8; 8];
+            addr.copy_from_slice(&data[0..8]);
+            let addr = u64::from_ne_bytes(addr);
+            self.process.context.read_request_ptr = addr;
+            let mut size = [0u8; 8];
+            size.copy_from_slice(&data[8..16]);
+            let size = u64::from_ne_bytes(size);
+            self.process.context.read_request_buf_size = size;
+            log::debug!("Guest request: Read2: read_request_ptr={:#x}, buf_size={}", addr, size);
         }
         
         self.return_value = match request_type {
@@ -1023,16 +1135,18 @@ impl ProcessRuntime for PALContext  {
             PalSvsmGuestRequestType::READ => {
                 TrustletReturnType::READ as u64
             }
+            PalSvsmGuestRequestType::READ2 => {
+                TrustletReturnType::READ2 as u64
+            }
         };
         false
     }
 
     /// Handle an exception occured in the trustlet
-    // XXX: Currently this function assumes that the exception is a #PF
     fn handle_exception(&mut self) -> bool {
         let exception = self.vmsa.rcx;
         match exception {
-            13 => {
+            13 /* #GP */ => {
                 let cr2 = self.vmsa.cr2;
                 let error_code = self.vmsa.rbx;
                 let rsp = self.vmsa.rsp;
@@ -1066,7 +1180,7 @@ impl ProcessRuntime for PALContext  {
                 log::info!("Unhandled #GP");
                 return false;
             }
-            14 => {
+            14 /* #PF */ => {
                 let rip= self.vmsa.rip;
                 let cr2 = self.vmsa.cr2;
                 let error_code = self.vmsa.rbx;
