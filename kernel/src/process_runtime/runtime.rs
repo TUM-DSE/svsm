@@ -23,6 +23,7 @@ use crate::mm::phys_to_virt;
 use crate::process_manager::process_memory::{PGD, addr_to_idx}; 
 use crate::process_manager::memory_channels::{INPUT_VADDR, OUTPUT_VADDR};
 use core::arch::asm;
+use core::sync::atomic;
 
 const TRUSTLET_VMPL: u64 = 1;
 
@@ -1067,6 +1068,9 @@ impl ProcessRuntime for PALContext  {
                 return false;
             }
             14 => {
+                #[cfg(feature = "stat")]
+                crate::sev::utils::stat::PF_COUNT.fetch_add(1, atomic::Ordering::Relaxed);
+
                 let rip= self.vmsa.rip;
                 let cr2 = self.vmsa.cr2;
                 let error_code = self.vmsa.rbx;
@@ -1116,6 +1120,9 @@ impl ProcessRuntime for PALContext  {
                 }
                 if error_code & PF_PRESENT != 0 && error_code & PF_WRITE != 0 {
                     // CoW
+                    #[cfg(feature = "stat")]
+                    crate::sev::utils::stat::COW_COUNT.fetch_add(1, atomic::Ordering::Relaxed);
+
                     let mut page_table_ref = ProcessPageTableRef::default();
                     page_table_ref.set_external_table(self.vmsa.cr3);
                     // Handle CoW

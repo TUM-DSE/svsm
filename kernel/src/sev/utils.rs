@@ -11,6 +11,13 @@ use crate::utils::MemoryRegion;
 use core::arch::asm;
 use core::fmt;
 
+pub mod stat {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    pub static PVALIDATE_COUNT: AtomicU64 = AtomicU64::new(0);
+    pub static PF_COUNT: AtomicU64 = AtomicU64::new(0);
+    pub static COW_COUNT: AtomicU64 = AtomicU64::new(0);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 pub enum SevSnpError {
@@ -103,6 +110,9 @@ pub fn pvalidate(vaddr: VirtAddr, size: PageSize, valid: PvalidateOp) -> Result<
     let rdx = valid as u64;
     let ret: u64;
     let cf: u64;
+
+    #[cfg(feature = "stat")]
+    stat::PVALIDATE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
     unsafe {
         asm!("xorq %r8, %r8",
