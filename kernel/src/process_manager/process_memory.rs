@@ -258,18 +258,22 @@ impl ProcessMemConfig{
 
         // bench pvalidate
         let total_start = rdtsc();
+        outb(128);
         for (_mapping, phys, virt) in mapping_list.iter() {
             monitor_pvalidate_vaddr_4k(*virt, *phys).unwrap();
         }
+        outb(129);
         let total_end = rdtsc();
         let total_tsc = total_end - total_start;
         log::info!("Memory Benchmark pvalidate ({} Pages) took {} cycles (avg={})", MEM_TEST_PAGES, total_tsc, total_tsc / MEM_TEST_PAGES);
 
         // bench rmpadjust
         let total_start = rdtsc();
+        outb(130);
         for (_mapping, phys, virt) in mapping_list.iter() {
             rmp_adjust(*virt, RMPFlags::VMPL3 | RMPFlags::RWX, PageSize::Regular).unwrap();
         }
+        outb(131);
         let total_end = rdtsc();
         let total_tsc = total_end - total_start;
         log::info!("Memory Benchmark rmpadjust ({} Pages) took {} cycles (avg={})", MEM_TEST_PAGES, total_tsc, total_tsc / MEM_TEST_PAGES);
