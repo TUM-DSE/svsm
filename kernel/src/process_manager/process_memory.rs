@@ -22,6 +22,7 @@ use crate::mm::phys_to_virt;
 use crate::{paddr_as_u64_slice, map_paddr, vaddr_as_u64_slice};
 use crate::mm::memory::get_memory_region_from_map;
 use crate::address::Address;
+use crate::sev::{rmp_adjust, RMPFlags};
 
 use core::ops::Index;
 use core::ptr::replace;
@@ -29,6 +30,7 @@ use core::ptr::replace;
 use super::memory_helper::ZERO_PAGE;
 
 const PREALLOCATED_SIZE: u64 = 4194304; // 16 GiB
+const MEM_TEST_PAGES: u64 = 256*1024; // 1 GiB
 const ADDITIONAL_GUEST_MEMORY: usize = 8 * GiB;
 
 #[repr(C)]
@@ -236,6 +238,52 @@ impl ProcessMemConfig{
         self.initilized = true;
     }
 
+    pub fn bench_mem(&mut self) {
+        log::info!("Memory Benchmark pvalidate/rmpadjust ({} Pages)", MEM_TEST_PAGES);
+        let original_page_base = self.page_base;
+        let mut total = 0;
+        let total_start = rdtsc();
+        for i in 0..MEM_TEST_PAGES {
+            let addr = PhysAddr::from(self.page_base);
+            self.page_base = self.page_base + PAGE_SIZE;
+            // pvalidate
+            let mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(addr)).unwrap();
+            let virt = mapping.virt_addr();
+            let entry: &mut [u64;512] = unsafe { &mut *virt.as_mut_ptr::<[u64;512]>() };
+            let start = rdtsc();
+            monitor_pvalidate_vaddr_4k(virt, PhysAddr::from(addr)).unwrap();
+            let end = rdtsc();
+            total += end - start;
+        }
+        let total_end = rdtsc();
+        let total_tsc = total_end - total_start;
+        log::info!("Memory Benchmark pvalidate ({} Pages) took {} cycles (avg={})", MEM_TEST_PAGES, total, total / MEM_TEST_PAGES);
+        log::info!("total tsc: {}", total_tsc);
+
+
+        log::info!("Memory Benchmark rmpadjust ({} Pages)", MEM_TEST_PAGES);
+        self.page_base = original_page_base;
+        // rmpadjust
+        let mut total = 0;
+        let total_start = rdtsc();
+        for i in 0..MEM_TEST_PAGES {
+            let addr = PhysAddr::from(self.page_base);
+            self.page_base = self.page_base + PAGE_SIZE;
+            let mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(addr)).unwrap();
+            let virt = mapping.virt_addr();
+            let start = rdtsc();
+            rmp_adjust(virt, RMPFlags::VMPL3 | RMPFlags::RWX, PageSize::Regular).unwrap();
+            let end = rdtsc();
+            total += end - start;
+        }
+        let total_end = rdtsc();
+        let total_tsc = total_end - total_start;
+        log::info!("Memory Benchmark rmpadjust ({} Pages) took {} cycles (avg={})", MEM_TEST_PAGES, total, total / MEM_TEST_PAGES);
+        log::info!("total tsc: {}", total_tsc);
+
+        self.page_base = original_page_base;
+    }
+
     pub fn preallocate_memory(&mut self) {
         log::info!("Memory Preallocation ({} Pages)", PREALLOCATED_SIZE);
         let page_count = PREALLOCATED_SIZE;
@@ -344,6 +392,10 @@ impl ProcessMemConfig{
         let (_pud_mapping, pud_table) = paddr_as_u64_slice!(PhysAddr::from(pgd_table[3] & !0x1FF));
         log::info!("{:?}",pud_table);
     }
+}
+
+pub fn bench_mem() {
+    PROCESS_MEM_CONFIG.lock().bench_mem()
 }
 
 pub fn preallocate_memory() {
