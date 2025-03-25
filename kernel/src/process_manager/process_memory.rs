@@ -30,7 +30,6 @@ use core::ptr::replace;
 use super::memory_helper::ZERO_PAGE;
 
 const PREALLOCATED_SIZE: u64 = 4194304; // 16 GiB
-const MEM_TEST_PAGES: u64 = 256*1024; // 1 GiB
 const ADDITIONAL_GUEST_MEMORY: usize = 8 * GiB;
 
 #[repr(C)]
@@ -239,47 +238,41 @@ impl ProcessMemConfig{
     }
 
     pub fn bench_mem(&mut self) {
+        const MEM_TEST_PAGES: u64 = 256;
         log::info!("Memory Benchmark pvalidate/rmpadjust ({} Pages)", MEM_TEST_PAGES);
         let original_page_base = self.page_base;
         let mut total = 0;
-        let total_start = rdtsc();
-        for i in 0..MEM_TEST_PAGES {
-            let addr = PhysAddr::from(self.page_base);
-            self.page_base = self.page_base + PAGE_SIZE;
-            // pvalidate
-            let mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(addr)).unwrap();
-            let virt = mapping.virt_addr();
-            let entry: &mut [u64;512] = unsafe { &mut *virt.as_mut_ptr::<[u64;512]>() };
-            let start = rdtsc();
-            monitor_pvalidate_vaddr_4k(virt, PhysAddr::from(addr)).unwrap();
-            let end = rdtsc();
-            total += end - start;
-        }
-        let total_end = rdtsc();
-        let total_tsc = total_end - total_start;
-        log::info!("Memory Benchmark pvalidate ({} Pages) took {} cycles (avg={})", MEM_TEST_PAGES, total, total / MEM_TEST_PAGES);
-        log::info!("total tsc: {}", total_tsc);
 
-
-        log::info!("Memory Benchmark rmpadjust ({} Pages)", MEM_TEST_PAGES);
-        self.page_base = original_page_base;
-        // rmpadjust
-        let mut total = 0;
-        let total_start = rdtsc();
+        // create percpupage mpping guard for each page
+        extern crate alloc;
+        use alloc::vec::Vec;
+        let mut mapping_list = Vec::new();
         for i in 0..MEM_TEST_PAGES {
             let addr = PhysAddr::from(self.page_base);
             self.page_base = self.page_base + PAGE_SIZE;
             let mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(addr)).unwrap();
             let virt = mapping.virt_addr();
-            let start = rdtsc();
-            rmp_adjust(virt, RMPFlags::VMPL3 | RMPFlags::RWX, PageSize::Regular).unwrap();
-            let end = rdtsc();
-            total += end - start;
+            let phys = PhysAddr::from(addr);
+            mapping_list.push((mapping, phys, virt));
+        }
+
+        // bench pvalidate
+        let total_start = rdtsc();
+        for (_mapping, phys, virt) in mapping_list.iter() {
+            monitor_pvalidate_vaddr_4k(*virt, *phys).unwrap();
         }
         let total_end = rdtsc();
         let total_tsc = total_end - total_start;
-        log::info!("Memory Benchmark rmpadjust ({} Pages) took {} cycles (avg={})", MEM_TEST_PAGES, total, total / MEM_TEST_PAGES);
-        log::info!("total tsc: {}", total_tsc);
+        log::info!("Memory Benchmark pvalidate ({} Pages) took {} cycles (avg={})", MEM_TEST_PAGES, total_tsc, total_tsc / MEM_TEST_PAGES);
+
+        // bench rmpadjust
+        let total_start = rdtsc();
+        for (_mapping, phys, virt) in mapping_list.iter() {
+            rmp_adjust(*virt, RMPFlags::VMPL3 | RMPFlags::RWX, PageSize::Regular).unwrap();
+        }
+        let total_end = rdtsc();
+        let total_tsc = total_end - total_start;
+        log::info!("Memory Benchmark rmpadjust ({} Pages) took {} cycles (avg={})", MEM_TEST_PAGES, total_tsc, total_tsc / MEM_TEST_PAGES);
 
         self.page_base = original_page_base;
     }
