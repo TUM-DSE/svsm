@@ -1,6 +1,6 @@
 use memory_helper::set_ecryption_mask_address_size;
 use process::{alloc_bench};
-use process_memory::{additional_monitor_memory_init, preallocate_memory};
+use process_memory::{additional_monitor_memory_init, preallocate_memory, bench_mem};
 pub use process::PROCESS_STORE;
 
 use crate::utils::immut_after_init::ImmutAfterInitCell;
@@ -32,6 +32,9 @@ pub fn monitor_init(){
 
     #[cfg(feature = "alloc_bench")]
     alloc_bench();
+
+    #[cfg(feature = "bench_mem")]
+    bench_mem();
 
     #[cfg(feature = "prealloc")]
     preallocate_memory();

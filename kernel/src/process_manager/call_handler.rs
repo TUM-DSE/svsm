@@ -20,6 +20,27 @@ const DELETE_CHANNEL: u32 = 11;
 const GET_PUBLIC_KEY: u32 = 30;
 const SEND_POLICY: u32 = 31;
 
+const GET_STAT: u32 = 100;
+const RESET_STAT: u32 = 101;
+
+pub fn get_stat(params: &mut RequestParams) -> Result<(), SvsmReqError> {
+    use core::sync::atomic::Ordering;
+    log::info!("Stat");
+    log::info!("PVALIDATE: {}", crate::sev::utils::stat::PVALIDATE_COUNT.load(Ordering::Relaxed));
+    log::info!("PF: {}", crate::sev::utils::stat::PF_COUNT.load(Ordering::Relaxed));
+    log::info!("COW: {}", crate::sev::utils::stat::COW_COUNT.load(Ordering::Relaxed));
+    Ok(())
+}
+
+pub fn reset_stat(params: &mut RequestParams) -> Result<(), SvsmReqError> {
+    use core::sync::atomic::Ordering;
+    log::info!("Stat Reset");
+    crate::sev::utils::stat::PVALIDATE_COUNT.store(0, Ordering::Relaxed);
+    crate::sev::utils::stat::PF_COUNT.store(0, Ordering::Relaxed);
+    crate::sev::utils::stat::COW_COUNT.store(0, Ordering::Relaxed);
+    Ok(())
+}
+
 pub fn diff_attestation(params: &mut RequestParams) -> Result<(), SvsmReqError>{
     attestation::monitor::diff_attestation(params)
 }
@@ -83,6 +104,8 @@ pub fn monitor_call_handler(request: u32, params: &mut RequestParams) -> Result<
         SEND_POLICY => send_policy(params),
         INVOKE_TRUSTLET => invoke_trustlet(params),
         CREATE_CHANNEL => create_channel(params),
+        GET_STAT => get_stat(params),
+        RESET_STAT => reset_stat(params),
         _ => Err(SvsmReqError::unsupported_call()),
     }
 }
