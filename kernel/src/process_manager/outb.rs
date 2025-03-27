@@ -1,6 +1,6 @@
 use core::arch::asm;
 
-#[cfg(any(feature = "boottime", feature = "bench_mem"))]
+#[cfg(any(feature = "boottime", feature = "bench_mem", feature = "breakdown"))]
 #[inline(always)]
 pub fn outb(value: u64) {
     unsafe {
@@ -10,7 +10,7 @@ pub fn outb(value: u64) {
     };
 }
 
-#[cfg(not(any(feature = "boottime", feature = "bench_mem")))]
+#[cfg(not(any(feature = "boottime", feature = "bench_mem", feature = "breakdown")))]
 #[inline(always)]
 pub fn outb(value: u64) {
    return;

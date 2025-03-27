@@ -211,6 +211,7 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let guest_data = params.r8;
     let guest_data_size = params.r9;
     let guest_page_table = params.rdx;
+    outb(210);
     let (invoke_data, range) = ProcessPageTableRef::copy_data_from_guest(guest_data, guest_data_size, guest_page_table);
     let invoke_data_struct = vaddr_as_u64_slice!(invoke_data);
 
@@ -224,9 +225,9 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
 
     let invocation_arg_guest_vaddr = invoke_data_struct[5];
     let invocation_arg_size = invoke_data_struct[6] as usize;
-
-    //range.unmount();
-    //range.delete();
+    outb(211);
+    range.unmount();
+    range.delete();
 
     let trustlet = PROCESS_STORE.get(ProcessID(id.try_into().unwrap()));
 
@@ -240,13 +241,14 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let sev_features = trustlet.context.sev_features;
 
     let apic_id = this_cpu().get_apic_id();
-
+    outb(212);
     match invocation_type {
         TrustletInvocationType::NORMAL => {
             // log::info!("Invoking Trustlet: Normal");
             trustlet.context.channel.inflate_input(vmsa.cr3, function_arg_size as usize);
             trustlet.context.channel.inflate_output(vmsa.cr3, result_size as usize);
             trustlet.context.channel.copy_into(function_arg, guest_page_table, function_arg_size as usize);
+            outb(213);
         } TrustletInvocationType::FILEATTR | TrustletInvocationType::OPEN | TrustletInvocationType::READ => {
             // log::info!("Invoking Trustlet: gueset request: {:?}", invocation_type);
             let mut guest_page_table_ref = ProcessPageTableRef::default();
@@ -334,7 +336,7 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
         }
     }
     params.rcx = rc.return_value;
-
+    outb(214);
     Ok(())
 }
 
@@ -575,11 +577,13 @@ impl ProcessRuntime for PALContext  {
     /// Sets the trustlet return value to 0
     /// Copies the reuslts into the provided buffer
     fn pal_svsm_get_result(&mut self) -> bool {
+        outb(220);
         self.process.context.channel.copy_out(
             self.result_addr,
             self.guest_page_table,
             self.result_size as usize);
         self.return_value = TrustletReturnType::GETRESULT as u64;
+        outb(221);
         false
     }
 

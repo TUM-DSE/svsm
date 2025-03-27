@@ -54,6 +54,7 @@ alloc_bench = []
 bench_mem = []
 prealloc = []
 stat = []
+breakdown = []
 no_print = ["log/max_level_error"]
 print = ["log/max_level_info"]
 

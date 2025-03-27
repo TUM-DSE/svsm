@@ -17,7 +17,7 @@ use crate::cpu::control_regs::read_cr3;
 use crate::mm::PAGE_SIZE;
 use crate::mm::pagetable::PageTableRef;
 use crate::mm::SVSM_PERCPU_VMSA_BASE;
-use crate::process_manager::process_memory;
+use crate::process_manager::{outb, process_memory};
 use crate::process_manager::PROCESS_STORE_SIZE;
 use crate::process_manager::process_memory::{allocate_page, free_page, ALLOCATION_RANGE_VIRT_START};
 use crate::process_manager::allocation::AllocationRange;
@@ -48,6 +48,7 @@ use crate::attestation::monitor::{ProcessMeasurements, measure};
 
 use super::exception_handling::*;
 
+use crate::process_manager::outb::outb;
 
 trait FromVAddr {
     fn from_virt_addr(v: VirtAddr) -> &'static mut VMSA;
@@ -155,6 +156,7 @@ impl TrustedProcess {
         // The Zygote is loaded in 3 files
         // We first load the a struct/array of addresses
         // that can then be used to get the next parts
+        outb(200);
         let (zygote_data, range) = ProcessPageTableRef::copy_data_from_guest(data, size, pgt);
 
         let zygote_data_struct = vaddr_as_u64_slice!(zygote_data);
@@ -195,9 +197,10 @@ impl TrustedProcess {
         libos_range.unmount();
         libos_range.delete();
         log::debug!("TODO: Compare with libos measurement of the policy");
-
+        outb(201);
         let mut context = ProcessContext::default();
         context.early_init(base, measurements);
+        outb(202);
         Self {
             process_type: TrustedProcessType::Zygote,
             id: 0,
@@ -232,7 +235,9 @@ impl TrustedProcess {
 
     pub fn trustlet(parent: ProcessID, data: u64, size: u64, pgt: u64) -> Self{
         // Inherit the data from the Zygote
+        outb(203);
         let mut trustlet = TrustedProcess::dublicate(parent);
+        outb(204);
         if data != 0 {
             let (function_code, function_code_range) = ProcessPageTableRef::copy_data_from_guest(data, size, pgt);
             trustlet.base.alloc_range_function.0 = function_code_range.0;
@@ -247,6 +252,7 @@ impl TrustedProcess {
             trustlet.context.page_table_ref.add_function(function_code, size);
             function_code_range.unmount();
             function_code_range.delete();
+            outb(205);
         }
         trustlet
     }

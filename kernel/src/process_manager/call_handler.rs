@@ -3,6 +3,8 @@ use crate::protocols::RequestParams;
 use crate::attestation;
 use crate::process_manager::process::TrustedProcessType;
 
+use super::outb::outb;
+
 const MONITOR_INIT: u32 = 0;
 // const MONITOR: u32 = 1;
 const DIFF_ATTEST: u32 = 2;
@@ -93,7 +95,8 @@ fn create_channel(params: &mut RequestParams) -> Result<(), SvsmReqError> {
 }
 
 pub fn monitor_call_handler(request: u32, params: &mut RequestParams) -> Result<(), SvsmReqError> {
-    match request {
+    outb(254);
+    let res = match request {
         MONITOR_INIT => monitor_init(params),
         DIFF_ATTEST => diff_attestation(params),
         CREATE_ZYGOTE => create_zygote(params),
@@ -107,5 +110,7 @@ pub fn monitor_call_handler(request: u32, params: &mut RequestParams) -> Result<
         GET_STAT => get_stat(params),
         RESET_STAT => reset_stat(params),
         _ => Err(SvsmReqError::unsupported_call()),
-    }
+    };
+    outb(255);
+    return res;
 }
