@@ -13,7 +13,7 @@ use crate::cpu::msr::rdtsc;
 use crate::process_manager::process_paging::{ProcessTableLevelMapping, TP_LIBOS_START_VADDR};
 use crate::{address::VirtAddr, cpu::{cpuid::{cpuid_table_raw, CpuidResult}, percpu::{this_cpu, this_cpu_unsafe}}, map_paddr, mm::{PerCPUPageMappingGuard, PAGE_SIZE}, paddr_as_slice, process_manager::{process::{ProcessID, TrustedProcess, PROCESS_STORE}, process_memory::allocate_page, process_paging::{GraminePalProtFlags, ProcessPageFlags, ProcessPageTableRef}}, protocols::{errors::SvsmReqError, RequestParams}, vaddr_as_u64_slice};
 use crate::process_manager::process_paging::ProcessPageTablePage;
-use crate::process_manager::outb::outb;
+use crate::process_manager::outb::{breakdown_outb, outb};
 
 use crate::{paddr_as_table, vaddr_as_slice};
 use crate::types::PageSize;
@@ -211,7 +211,7 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let guest_data = params.r8;
     let guest_data_size = params.r9;
     let guest_page_table = params.rdx;
-    outb(210);
+    breakdown_outb(210);
     let (invoke_data, range) = ProcessPageTableRef::copy_data_from_guest(guest_data, guest_data_size, guest_page_table);
     let invoke_data_struct = vaddr_as_u64_slice!(invoke_data);
 
@@ -225,7 +225,7 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
 
     let invocation_arg_guest_vaddr = invoke_data_struct[5];
     let invocation_arg_size = invoke_data_struct[6] as usize;
-    outb(211);
+    breakdown_outb(211);
     range.unmount();
     range.delete();
 
@@ -241,14 +241,14 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let sev_features = trustlet.context.sev_features;
 
     let apic_id = this_cpu().get_apic_id();
-    outb(212);
+    breakdown_outb(212);
     match invocation_type {
         TrustletInvocationType::NORMAL => {
             // log::info!("Invoking Trustlet: Normal");
             trustlet.context.channel.inflate_input(vmsa.cr3, function_arg_size as usize);
             trustlet.context.channel.inflate_output(vmsa.cr3, result_size as usize);
             trustlet.context.channel.copy_into(function_arg, guest_page_table, function_arg_size as usize);
-            outb(213);
+            breakdown_outb(213);
         } TrustletInvocationType::FILEATTR | TrustletInvocationType::OPEN | TrustletInvocationType::READ => {
             // log::info!("Invoking Trustlet: gueset request: {:?}", invocation_type);
             let mut guest_page_table_ref = ProcessPageTableRef::default();
@@ -336,7 +336,7 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
         }
     }
     params.rcx = rc.return_value;
-    outb(214);
+    breakdown_outb(214);
     Ok(())
 }
 
@@ -489,6 +489,12 @@ impl ProcessRuntime for PALContext  {
        
     }
 
+    #[cfg(feature = "no_cow")]
+    fn pal_svsm_finalize(&mut self) -> bool {
+        log::info!("Finalize called in No CoW mode");
+        return true;
+    }
+    #[cfg(not(feature = "no_cow"))]
     fn pal_svsm_finalize(&mut self) -> bool {
         //Finalize should mark every current page as finalizsed, e.g. read only
         let page_table = self.vmsa.cr3;
@@ -577,13 +583,13 @@ impl ProcessRuntime for PALContext  {
     /// Sets the trustlet return value to 0
     /// Copies the reuslts into the provided buffer
     fn pal_svsm_get_result(&mut self) -> bool {
-        outb(220);
+        breakdown_outb(220);
         self.process.context.channel.copy_out(
             self.result_addr,
             self.guest_page_table,
             self.result_size as usize);
         self.return_value = TrustletReturnType::GETRESULT as u64;
-        outb(221);
+        breakdown_outb(221);
         false
     }
 

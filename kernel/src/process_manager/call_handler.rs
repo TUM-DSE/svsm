@@ -3,7 +3,7 @@ use crate::protocols::RequestParams;
 use crate::attestation;
 use crate::process_manager::process::TrustedProcessType;
 
-use super::outb::outb;
+use super::outb::{breakdown_outb, outb};
 
 const MONITOR_INIT: u32 = 0;
 // const MONITOR: u32 = 1;
@@ -27,10 +27,10 @@ const RESET_STAT: u32 = 101;
 
 pub fn get_stat(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     use core::sync::atomic::Ordering;
-    log::info!("Stat");
-    log::info!("PVALIDATE: {}", crate::sev::utils::stat::PVALIDATE_COUNT.load(Ordering::Relaxed));
-    log::info!("PF: {}", crate::sev::utils::stat::PF_COUNT.load(Ordering::Relaxed));
-    log::info!("COW: {}", crate::sev::utils::stat::COW_COUNT.load(Ordering::Relaxed));
+    log::error!("Stat");
+    log::error!("PVALIDATE: {}", crate::sev::utils::stat::PVALIDATE_COUNT.load(Ordering::Relaxed));
+    log::error!("PF: {}", crate::sev::utils::stat::PF_COUNT.load(Ordering::Relaxed));
+    log::error!("COW: {}", crate::sev::utils::stat::COW_COUNT.load(Ordering::Relaxed));
     Ok(())
 }
 
@@ -95,7 +95,7 @@ fn create_channel(params: &mut RequestParams) -> Result<(), SvsmReqError> {
 }
 
 pub fn monitor_call_handler(request: u32, params: &mut RequestParams) -> Result<(), SvsmReqError> {
-    outb(254);
+    breakdown_outb(254);
     let res = match request {
         MONITOR_INIT => monitor_init(params),
         DIFF_ATTEST => diff_attestation(params),
@@ -111,6 +111,6 @@ pub fn monitor_call_handler(request: u32, params: &mut RequestParams) -> Result<
         RESET_STAT => reset_stat(params),
         _ => Err(SvsmReqError::unsupported_call()),
     };
-    outb(255);
+    breakdown_outb(255);
     return res;
 }

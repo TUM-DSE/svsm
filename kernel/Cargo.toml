@@ -57,7 +57,7 @@ stat = []
 breakdown = []
 no_print = ["log/max_level_error"]
 print = ["log/max_level_info"]
-
+no_cow = []
 [dev-dependencies]
 
 [lints]

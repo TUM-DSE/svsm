@@ -1,5 +1,4 @@
 use memory_helper::set_ecryption_mask_address_size;
-use process::{alloc_bench};
 use process_memory::{additional_monitor_memory_init, preallocate_memory, bench_mem};
 pub use process::PROCESS_STORE;
 
@@ -28,10 +27,6 @@ pub fn monitor_init(){
     let _ = additional_monitor_memory_init();
     PROCESS_STORE.init(PROCESS_STORE_SIZE);
     let _ = MONITOR_INIT_STATE.reinit(&MONITOR_INIT_STATE_TRUE);
-
-
-    #[cfg(feature = "alloc_bench")]
-    alloc_bench();
 
     #[cfg(feature = "bench_mem")]
     bench_mem();

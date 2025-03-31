@@ -15,3 +15,15 @@ pub fn outb(value: u64) {
 pub fn outb(value: u64) {
    return;
 }
+
+#[cfg(not(feature = "breakdown"))]
+#[inline(always)]
+pub fn breakdown_outb(value: u64) {
+    return;
+}
+
+#[cfg(feature = "breakdown")]
+#[inline(always)]
+pub fn breakdown_outb(value: u64) {
+    outb(value);
+}
