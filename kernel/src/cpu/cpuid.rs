@@ -79,7 +79,8 @@ impl CpuidResult {
 }
 
 pub fn cpuid_table_raw(eax: u32, ecx: u32, xcr0: u64, xss: u64) -> Option<CpuidResult> {
-    let count: usize = CPUID_PAGE.count as usize;
+    //FIXME
+    //let count: usize = CPUID_PAGE.count as usize;
     let count: usize = 64;
     for i in 0..count {
         if eax == CPUID_PAGE.func[i].eax_in

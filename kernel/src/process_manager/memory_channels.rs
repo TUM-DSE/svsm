@@ -1,7 +1,5 @@
-use log::Metadata;
-
-use crate::{address::{PhysAddr, VirtAddr}, cpu::flush_tlb_global, map_paddr, mm::{PerCPUPageMappingGuard, PAGE_SIZE}, paddr_as_slice, process_manager::process_memory::ALLOCATION_RANGE_VIRT_START, vaddr_as_slice};
-
+use crate::mm::PAGE_SIZE;
+use crate::process_manager::process_memory::ALLOCATION_RANGE_VIRT_START;
 use super::{allocation::AllocationRange, process::ProcessID, process_paging::ProcessPageTableRef};
 
 pub const INPUT_VADDR: u64 = 0x280_0000_0000u64;
@@ -41,7 +39,6 @@ impl MemoryChannel {
     }
 
     pub fn copy_into(&mut self, source_addr: u64, page_table: u64, size: usize) {
-        let target = VirtAddr::from(ALLOCATION_RANGE_VIRT_START);
         self.input.mount();
         ProcessPageTableRef::copy_data_from_guest_to(source_addr, size as u64, page_table, ALLOCATION_RANGE_VIRT_START);
         self.input.unmount();
@@ -49,7 +46,6 @@ impl MemoryChannel {
 
     pub fn copy_out(&mut self, target_addr: u64, page_table: u64, size: usize) {
         let copy_size = size + PAGE_SIZE - (size % PAGE_SIZE);
-        let source = VirtAddr::from(ALLOCATION_RANGE_VIRT_START);
         self.output.mount();
         ProcessPageTableRef::copy_data_to_guest(target_addr, copy_size as u64, page_table);
         self.output.unmount();

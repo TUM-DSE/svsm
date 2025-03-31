@@ -1,5 +1,12 @@
 use memory_helper::set_ecryption_mask_address_size;
-use process_memory::{additional_monitor_memory_init, preallocate_memory, bench_mem};
+use process_memory::additional_monitor_memory_init;
+
+#[cfg(feature = "bench_mem")]
+use process_memory::bench_mem;
+
+#[cfg(feature = "prealloc")]
+use process_memory::preallocate_memory;
+
 pub use process::PROCESS_STORE;
 
 use crate::utils::immut_after_init::ImmutAfterInitCell;

@@ -8,6 +8,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use crate::vaddr_as_u64_slice;
 
+#[allow(unused_imports)]
 use crate::my_crypto_wrapper::my_SHA512;
 use crate::my_crypto_wrapper::my_Hacl_Ed25519_sign;
 use crate::my_crypto_wrapper::get_keys;
@@ -21,13 +22,9 @@ use crate::mm::PAGE_SIZE;
 
 /* crates for attestation microbenchmarks */
 use crate::process_manager::process_paging::{TP_MANIFEST_START_VADDR, TP_LIBOS_START_VADDR, TP_FUNCTION_START_VADDR};
-use crate::address::VirtAddr;
-use cpuarch::vmsa::VMSA;
-use crate::map_paddr;
-use crate::process_manager::process_memory::{allocate_page, ALLOCATION_RANGE_VIRT_START};
+use crate::process_manager::process_memory::ALLOCATION_RANGE_VIRT_START;
 use crate::cpu::control_regs::{read_cr3};
 use crate::address::Address;
-use crate::mm::phys_to_virt;
 use crate::process_manager::process_memory::{PGD, addr_to_idx};
 use crate::cpu::flush_tlb_global;
 /* end of crates for attestation microbenchmarks */
@@ -138,8 +135,8 @@ fn sign_report(report: &[u8]) -> [u8; SIGNATURE_SIZE] {
 }
 
 #[cfg(feature = "boottime")]
-pub fn measure(start_address: u64, size: u64) -> [u8; HASH_SIZE] {
-    let mut hash: [u8; HASH_SIZE] = [0; HASH_SIZE];
+pub fn measure(_start_address: u64, _size: u64) -> [u8; HASH_SIZE] {
+    let hash: [u8; HASH_SIZE] = [0; HASH_SIZE];
     hash
 }
 
@@ -551,7 +548,7 @@ fn prepare_zygote_report_cold(params: &mut RequestParams) -> Result<(), SvsmReqE
     // we need to mount the allocation range for the init to have a valid translation
     // for the ALLOCATION_RANGE_VIRT_START address
     zygote.base.alloc_range.mount();
-    let init_ptr = ALLOCATION_RANGE_VIRT_START; //zygote.base.alloc_range.0;
+    //let init_ptr = ALLOCATION_RANGE_VIRT_START; //zygote.base.alloc_range.0;
     let manifest_ptr = TP_MANIFEST_START_VADDR; //zygote.base.alloc_range_manifest.0;
     let libos_ptr = TP_LIBOS_START_VADDR; //zygote.base.alloc_range_libos.0;
 

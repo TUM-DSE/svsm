@@ -3,7 +3,7 @@ use crate::protocols::RequestParams;
 use crate::attestation;
 use crate::process_manager::process::TrustedProcessType;
 
-use super::outb::{breakdown_outb, outb};
+use super::outb::breakdown_outb;
 
 const MONITOR_INIT: u32 = 0;
 // const MONITOR: u32 = 1;
@@ -25,7 +25,7 @@ const SEND_POLICY: u32 = 31;
 const GET_STAT: u32 = 100;
 const RESET_STAT: u32 = 101;
 
-pub fn get_stat(params: &mut RequestParams) -> Result<(), SvsmReqError> {
+pub fn get_stat(_params: &mut RequestParams) -> Result<(), SvsmReqError> {
     use core::sync::atomic::Ordering;
     log::error!("Stat");
     log::error!("PVALIDATE: {}", crate::sev::utils::stat::PVALIDATE_COUNT.load(Ordering::Relaxed));
@@ -34,7 +34,7 @@ pub fn get_stat(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     Ok(())
 }
 
-pub fn reset_stat(params: &mut RequestParams) -> Result<(), SvsmReqError> {
+pub fn reset_stat(_params: &mut RequestParams) -> Result<(), SvsmReqError> {
     use core::sync::atomic::Ordering;
     log::info!("Stat Reset");
     crate::sev::utils::stat::PVALIDATE_COUNT.store(0, Ordering::Relaxed);

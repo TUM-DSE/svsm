@@ -9,21 +9,16 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use num_enum::TryFromPrimitive;
 use crate::address::PhysAddr;
-use crate::cpu::msr::rdtsc;
-use crate::process_manager::process_paging::{ProcessTableLevelMapping, TP_LIBOS_START_VADDR};
-use crate::{address::VirtAddr, cpu::{cpuid::{cpuid_table_raw, CpuidResult}, percpu::{this_cpu, this_cpu_unsafe}}, map_paddr, mm::{PerCPUPageMappingGuard, PAGE_SIZE}, paddr_as_slice, process_manager::{process::{ProcessID, TrustedProcess, PROCESS_STORE}, process_memory::allocate_page, process_paging::{GraminePalProtFlags, ProcessPageFlags, ProcessPageTableRef}}, protocols::{errors::SvsmReqError, RequestParams}, vaddr_as_u64_slice};
-use crate::process_manager::process_paging::ProcessPageTablePage;
+use crate::process_manager::process_paging::TP_LIBOS_START_VADDR;
+use crate::{address::VirtAddr, cpu::{cpuid::{cpuid_table_raw, CpuidResult}, percpu::{this_cpu, this_cpu_unsafe}}, map_paddr, mm::PerCPUPageMappingGuard, paddr_as_slice, process_manager::{process::{ProcessID, TrustedProcess, PROCESS_STORE}, process_memory::allocate_page, process_paging::{GraminePalProtFlags, ProcessPageFlags, ProcessPageTableRef}}, protocols::{errors::SvsmReqError, RequestParams}, vaddr_as_u64_slice};
 use crate::process_manager::outb::{breakdown_outb, outb};
 
-use crate::{paddr_as_table, vaddr_as_slice};
+use crate::vaddr_as_slice;
 use crate::types::PageSize;
 use crate::sev::RMPFlags;
 use crate::sev::rmp_adjust;
-use crate::mm::phys_to_virt;
-use crate::process_manager::process_memory::{PGD, addr_to_idx}; 
+use crate::process_manager::process_memory::{PGD, addr_to_idx};
 use crate::process_manager::memory_channels::{INPUT_VADDR, OUTPUT_VADDR};
-use core::arch::asm;
-use core::sync::atomic;
 
 const TRUSTLET_VMPL: u64 = 1;
 
@@ -159,8 +154,8 @@ pub fn early_invoke(zygote: &'static mut TrustedProcess) {
     let vmsa_mapping = PerCPUPageMappingGuard::create_4k(zygote.context.vmsa).unwrap();
     let vmsa: &mut VMSA = unsafe { vmsa_mapping.virt_addr().as_mut_ptr::<VMSA>().as_mut().unwrap() };
 
-    let mut string_buf: [u8;256] = [0;256];
-    let mut string_pos: usize = 0;
+    let string_buf: [u8;256] = [0;256];
+    let string_pos: usize = 0;
     let sev_features = zygote.context.sev_features;
     let apic_id = this_cpu().get_apic_id();
 
@@ -236,8 +231,8 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     let vmsa_mapping = PerCPUPageMappingGuard::create_4k(trustlet.context.vmsa).unwrap();
     let vmsa: &mut VMSA = unsafe { vmsa_mapping.virt_addr().as_mut_ptr::<VMSA>().as_mut().unwrap() };
 
-    let mut string_buf: [u8;256] = [0;256];
-    let mut string_pos: usize = 0;
+    let string_buf: [u8;256] = [0;256];
+    let string_pos: usize = 0;
     let sev_features = trustlet.context.sev_features;
 
     let apic_id = this_cpu().get_apic_id();
@@ -551,8 +546,8 @@ impl ProcessRuntime for PALContext  {
     /// * rdx: edx value of the cpuid result
     fn pal_svsm_cpuid(&mut self) -> bool {
         let eax =  self.vmsa.rax as u32;
-        let eax_tmp = self.vmsa.rax;
-        let ecx_tmp = self.vmsa.rcx;
+        //let eax_tmp = self.vmsa.rax;
+        //let ecx_tmp = self.vmsa.rcx;
         // Some cpuid leafs have subleaf (ecx) and some don't
         // for the ones that don't we set ecx to 0 (otherwise CPUID table lookup fails)
         let ecx = match eax {
@@ -944,7 +939,7 @@ impl ProcessRuntime for PALContext  {
     fn pal_svsm_print_info(&mut self) -> bool {
         let addr = self.vmsa.rbx;
         let len = self.vmsa.rcx;
-        let print_vmsa = if self.vmsa.rdx == 0 { false } else { true };
+        //let print_vmsa = if self.vmsa.rdx == 0 { false } else { true };
 
         let page_table = self.vmsa.cr3;
         let mut page_table_ref = ProcessPageTableRef::default();

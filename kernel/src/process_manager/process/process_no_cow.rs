@@ -1,39 +1,17 @@
-extern crate alloc;
-
-//use core::arch::global_asm;
-use core::cell::UnsafeCell;
-use alloc::vec::Vec;
-use cpuarch::vmsa::VMSASegment;
-use igvm_defs::PAGE_SIZE_4K;
-use crate::cpu::msr::rdtsc;
-use crate::locking::{RWLock, ReadLockGuard, WriteLockGuard};
-use crate::address::PhysAddr;
 use crate::cpu::percpu::this_cpu_shared;
-use crate::cpu::percpu::this_cpu_unsafe;
-use crate::cpu::tss::{X86Tss,TSS_LIMIT};
-use crate::cpu::gdt::GDT;
-use crate::cpu::idt::common::{IdtEntry, DF_VECTOR, IDT, PF_VECTOR, GP_VECTOR};
-use crate::cpu::control_regs::read_cr3;
 use crate::mm::PAGE_SIZE;
-use crate::mm::pagetable::PageTableRef;
 use crate::mm::SVSM_PERCPU_VMSA_BASE;
-use crate::process_manager::{process_memory};
+use crate::process_manager::process_memory;
 use crate::process_manager::PROCESS_STORE_SIZE;
-use crate::process_manager::process_memory::{allocate_page, free_page, ALLOCATION_RANGE_VIRT_START};
-use crate::process_manager::allocation::AllocationRange;
-use crate::process_manager::process_paging::{ProcessPageTableEntry, ProcessPageTableRef};
-use crate::process_manager::process_paging::ProcessPageFlags;
-use crate::process_runtime::runtime::{early_invoke, MmapManager};
+use crate::process_manager::process_memory::allocate_page;
+use crate::process_manager::process_paging::ProcessPageTableRef;
+use crate::process_runtime::runtime::MmapManager;
 use crate::protocols::errors::SvsmResultCode;
 use crate::protocols::errors::SvsmReqError;
 use crate::protocols::RequestParams;
 use crate::sev::RMPFlags;
 use crate::sev::rmp_adjust;
-//use crate::cpu::percpu::this_cpu_mut;
-use crate::cpu::percpu::this_cpu;
-//use crate::cpu::flush_tlb_global_sync;
 use crate::types::PageSize;
-use crate::address::VirtAddr;
 use crate::mm::PerCPUPageMappingGuard;
 use crate::sev::utils::rmp_set_guest_vmsa;
 use crate::vaddr_as_u64_slice;
@@ -41,9 +19,7 @@ use super::*;
 use cpuarch::vmsa::VMSA;
 use core::mem::replace;
 
-use crate::process_manager::process_paging::{TP_STACK_START_VADDR,TP_KERN_STACK_START_VADDR};
-use crate::process_manager::process_paging::{TP_LIBOS_START_VADDR,TP_MANIFEST_START_VADDR};
-use crate::process_manager::memory_channels::MemoryChannel;
+use crate::process_manager::process_paging::TP_STACK_START_VADDR;
 use crate::attestation::monitor::{ProcessMeasurements, measure};
 
 use crate::process_manager::exception_handling::*;
@@ -165,7 +141,7 @@ pub fn create_trusted_process(params: &mut RequestParams, t: TrustedProcessType)
             // the store
             let res = PROCESS_STORE.insert(z);
 
-            let z = PROCESS_STORE.get(ProcessID(res.try_into().unwrap()));
+            let _z = PROCESS_STORE.get(ProcessID(res.try_into().unwrap()));
 
 
             // Copy the value to the return register
@@ -232,7 +208,7 @@ pub fn delete_trusted_process(params: &mut RequestParams) -> Result<(), SvsmReqE
 impl ProcessContext {
 
     /// This function is called to create a Trustlet from a Zygote
-    pub fn init(&mut self, base: ProcessBaseContext, measurements: ProcessMeasurements, zygote_context: ProcessContext) {
+    pub fn init(&mut self, base: ProcessBaseContext, measurements: ProcessMeasurements, _zygote_context: ProcessContext) {
 
         // Setup a new page table for the Process
         let mut new_page_table_ref = ProcessPageTableRef::default();

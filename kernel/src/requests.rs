@@ -9,7 +9,6 @@ use crate::cpu::ghcb::current_ghcb;
 use crate::cpu::percpu::{process_requests, this_cpu, wait_for_requests};
 use crate::error::SvsmError;
 use crate::mm::GuestPtr;
-use crate::paddr_as_u64_slice;
 use crate::process_manager::process_memory::additional_monitor_memory_init;
 use crate::protocols::core::core_protocol_request;
 use crate::protocols::errors::{SvsmReqError, SvsmResultCode};
@@ -21,11 +20,6 @@ use crate::protocols::{process::process_protocol_request, SVSM_PROCESS_PROTOCOL}
 use crate::types::GUEST_VMPL;
 use crate::utils::halt;
 use cpuarch::vmsa::GuestVMExit;
-
-use crate::vaddr_as_u64_slice;
-use crate::map_paddr;
-use crate::cpu::control_regs::read_cr3;
-use crate::mm::PerCPUPageMappingGuard;
 
 /// The SVSM Calling Area (CAA)
 #[repr(C, packed)]
@@ -126,7 +120,7 @@ fn check_requests() -> Result<bool, SvsmReqError> {
 
 pub fn request_loop() {
 
-    additional_monitor_memory_init();
+    let _ = additional_monitor_memory_init();
 
     loop {
         // Determine whether the guest is runnable.  If not, halt and wait for
@@ -201,7 +195,7 @@ pub fn request_loop() {
 #[no_mangle]
 pub extern "C" fn request_processing_main() {
 
-    additional_monitor_memory_init();
+    let _ = additional_monitor_memory_init();
 
     loop {
         wait_for_requests();

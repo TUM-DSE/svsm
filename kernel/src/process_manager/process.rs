@@ -181,14 +181,16 @@ impl ProcessBaseContext {
         self.page_table_ref = ptr;
     }
 
+    #[allow(unused_variables)]
     pub fn add_manifest(&mut self, manifest: VirtAddr, size: u64, data: AllocationRange) {
-        let orig_size = size;
+        //let orig_size = size;
         let size = (4096 - (size & 0xFFF)) + size;
         self.page_table_ref.add_manifest(manifest, size);
         //self.alloc_range_manifest.0 = data.0;
         //self.alloc_range_manifest.1 = orig_size;
     }
 
+    #[allow(unused_variables)]
     pub fn add_libos(&mut self, libos: VirtAddr, size: u64, data: AllocationRange){
         let orig_size = size;
         let size = (4096 - (size & 0xFFF)) + size;
@@ -197,6 +199,7 @@ impl ProcessBaseContext {
         //self.alloc_range_libos.1 = orig_size;
     }
 
+    #[allow(unused_variables)]
     pub fn init_with_data(&mut self, elf: VirtAddr, size: u64, data: AllocationRange) {
         self.init(elf, size);
         //self.alloc_range.0 = data.0;

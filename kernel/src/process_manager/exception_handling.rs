@@ -10,7 +10,7 @@ use crate::address::PhysAddr;
 use crate::types::PageSize;
 use crate::sev::RMPFlags;
 use crate::sev::rmp_adjust;
-use super::process_paging::{TP_STACK_START_VADDR,TP_KERN_STACK_START_VADDR};
+use super::process_paging::TP_KERN_STACK_START_VADDR;
 use crate::cpu::control_regs::read_cr3;
 use crate::process_manager::process_paging::ProcessPageTableRef;
 

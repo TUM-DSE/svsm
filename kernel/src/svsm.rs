@@ -12,7 +12,6 @@ use svsm::fw_meta::{print_fw_meta, validate_fw_memory, SevFWMetaData};
 use bootlib::kernel_launch::KernelLaunchInfo;
 use svsm::process_manager;
 use svsm::process_manager::monitor_init;
-use svsm::process_manager::process::PROCESS_STORE;
 use core::arch::global_asm;
 use core::mem::size_of;
 use core::panic::PanicInfo;
@@ -55,8 +54,7 @@ use svsm::task::exec_user;
 use svsm::task::{create_kernel_task, schedule_init};
 use svsm::types::{PageSize, GUEST_VMPL, PAGE_SIZE};
 use svsm::utils::{halt, immut_after_init::ImmutAfterInitCell, zero_mem_region};
-use core::arch::asm;
-use svsm::process_manager::outb::outb;  
+use svsm::process_manager::outb::outb;
 
 #[cfg(all(feature = "mstpm", not(test)))]
 use svsm::vtpm::vtpm_init;

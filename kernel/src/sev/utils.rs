@@ -12,7 +12,7 @@ use core::arch::asm;
 use core::fmt;
 
 pub mod stat {
-    use core::sync::atomic::{AtomicU64, Ordering};
+    use core::sync::atomic::AtomicU64;
     pub static PVALIDATE_COUNT: AtomicU64 = AtomicU64::new(0);
     pub static PF_COUNT: AtomicU64 = AtomicU64::new(0);
     pub static COW_COUNT: AtomicU64 = AtomicU64::new(0);

@@ -4,7 +4,7 @@ use crate::mm::PAGE_SIZE;
 use crate::address::{Address, PhysAddr, VirtAddr};
 use crate::process_manager::process_paging::{ProcessPageTableEntry, ProcessPageTablePage, ProcessPageTableRef};
 use crate::process_manager::process_paging::ProcessPageFlags;
-use super::process_memory::{ALLOCATION_RANGE_VIRT_START, PGD};
+use super::process_memory::PGD;
 use crate::cpu::control_regs::read_cr3;
 use crate::sev::{rmp_adjust, RMPFlags};
 use crate::types::PageSize;
@@ -14,7 +14,7 @@ use crate::mm::PerCPUPageMappingGuard;
 
 const ALLOCATION_VADDR_START: u64 = 0x30000000000u64;
 pub const DEFAULT_ALLOCATION_RANGE_MOUNT: usize = 6;
-const PGD_SHIFT: u64 = 39;
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AllocationRange(pub u64, pub u64);
@@ -51,7 +51,7 @@ impl AllocationRange {
             let current_page = allocate_page();
             if !mount {
                 let (mapping, _page_mapped) = paddr_as_slice!(current_page);
-                rmp_adjust(mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular);
+                let _ = rmp_adjust(mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular);
             }
             page_table_ref.map_4k_page(start_address + i * PAGE_SIZE, current_page, table_flags);
         };
@@ -79,7 +79,7 @@ impl AllocationRange {
         for i in begin..(pages as usize) {
             let current_page = allocate_page();
             let (mapping, _page_mapped) = paddr_as_slice!(current_page);
-            rmp_adjust(mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular);
+            let _ = rmp_adjust(mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular);
             page_table_ref.map_4k_page(start_address + i * PAGE_SIZE, current_page, table_flags);
         }
         self.1 = pages;

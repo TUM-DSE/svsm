@@ -1,4 +1,4 @@
-use crate::{address::{Address, PhysAddr, VirtAddr}, cpu::{flush_tlb_global, msr::rdtsc}, paddr_as_table, process_manager::process_memory::allocate_page, sev::{rmp_adjust, RMPFlags}};
+use crate::{address::{Address, PhysAddr, VirtAddr}, cpu::flush_tlb_global, paddr_as_table, process_manager::process_memory::allocate_page, sev::{rmp_adjust, RMPFlags}};
 use crate::{paddr_as_slice, paddr_as_u64_slice, vaddr_as_u64_slice, vaddr_as_slice, map_paddr, strip_paddr};
 use crate::process_manager::memory_helper::{strip_c_bit, set_c_bit_in_address};
 use crate::mm::PerCPUPageMappingGuard;
@@ -12,7 +12,6 @@ use core::mem::replace;
 use crate::types::PageSize;
 use super::process_memory::{free_page, ALLOCATION_RANGE_VIRT_START, PGD, PMD, PTE, PUD};
 use crate::process_manager::allocation::AllocationRange;
-use core::ffi::CStr;
 use super::memory_helper::{ZERO_PAGE};
 
 // TP: Trusted Process
@@ -188,7 +187,7 @@ macro_rules! check_replace_cow_table {
 
         } else {
             let new_page = allocate_page();
-            let (_new_mapping, new_data) = paddr_as_table!(new_page);
+            let (_new_mapping, _new_data) = paddr_as_table!(new_page);
             rmp_adjust(_new_mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
             $table[$idx].set(new_page, $input_flags);
         }
@@ -293,7 +292,7 @@ impl ProcessPageTableRef {
         let mut file_size = filesize;
         for i in 0..required_pages {
             let new_page = allocate_page();
-            let (mapping, mapping_vaddr) = map_paddr!(new_page);
+            let (_mapping, mapping_vaddr) = map_paddr!(new_page);
             let mapped_page = unsafe { &mut *mapping_vaddr.as_mut_ptr::<[u8;4096]>()};
             rmp_adjust(mapping_vaddr, RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
             for j in 0..4096 {
@@ -348,9 +347,9 @@ impl ProcessPageTableRef {
         self.map_4k_pages(start, flags, size);
     }
 
+    #[allow(unused_mut)]
     pub fn finalize_pages(&self) {
         let null = PhysAddr::null();
-        let mut current = VirtAddr::null();
         let mut _mapping_pgd: PerCPUPageMappingGuard;
         let mut _mapping_pud: PerCPUPageMappingGuard;
         let mut _mapping_pmd: PerCPUPageMappingGuard;
@@ -362,13 +361,13 @@ impl ProcessPageTableRef {
         let mut pte_table: &mut ProcessPageTablePage;
 
         let mut pgd_idx: usize = 0;
-        let mut pud_idx: usize = 0;
-        let mut pmd_idx: usize = 0;
-        let mut pte_idx: usize = 0;
+        let mut pud_idx: usize;
+        let mut pmd_idx: usize;
+        let mut pte_idx: usize;
 
         (_mapping_pgd, pgd_table) = paddr_as_table!(self.process_page_table);
         log::info!("Start finilaizing");
-        pgd_idx = 0;
+
         while pgd_idx < 512 {
 
             //Memory channels
@@ -446,6 +445,7 @@ impl ProcessPageTableRef {
         log::info!("Finilzaing done");
     }
 
+    #[allow(unused_mut)]
     pub fn remove_pages(&self, start: VirtAddr, size: u64){
         let mut count = 0;
         let mut current = start;
@@ -613,8 +613,8 @@ impl ProcessPageTableRef {
 
     pub fn page_walk_external(&self, vaddr: VirtAddr) -> PhysAddr {
         let (_pgd_mapping, pgd_table) = paddr_as_table!(self.process_page_table);
-        let mut current_mapping = self.page_walk(&pgd_table, self.process_page_table, vaddr);
-        let mut current_mapping = self.page_walk(&pgd_table, self.process_page_table, vaddr);
+        //let mut current_mapping = self.page_walk(&pgd_table, self.process_page_table, vaddr);
+        let current_mapping = self.page_walk(&pgd_table, self.process_page_table, vaddr);
         match current_mapping {
             ProcessTableLevelMapping::PTE(addr, index) => {
                 let (_mapping, table) = paddr_as_u64_slice!(addr);
@@ -622,14 +622,11 @@ impl ProcessPageTableRef {
             }
             _ => return PhysAddr::null()
         }
-
-
-
     }
 
     pub fn virt_to_phys(&self, vaddr: VirtAddr) -> PhysAddr {
         let (_pgd_mapping, pgd_table) = paddr_as_table!(self.process_page_table);
-        let mut current_mapping = self.page_walk(&pgd_table, self.process_page_table, vaddr);
+        let current_mapping = self.page_walk(&pgd_table, self.process_page_table, vaddr);
         match current_mapping {
             ProcessTableLevelMapping::PTE(addr, index) => {
                 let (_mapping, table) = paddr_as_u64_slice!(addr);
@@ -738,27 +735,27 @@ impl ProcessPageTableRef {
 
     pub fn map_4k_pages(&self, target: VirtAddr, flags: ProcessPageFlags, count: u64) {
         let (_pgd_mapping, pgd_table) = paddr_as_table!(self.process_page_table);
-        let mut pgd_idx = ProcessPageTable::index::<PGD>(target);
-        let mut pud_idx = ProcessPageTable::index::<PUD>(target);
-        let mut pmd_idx = ProcessPageTable::index::<PMD>(target);
-        let mut pte_idx = ProcessPageTable::index::<PTE>(target);
+        let mut pgd_idx;
+        let mut pud_idx;
+        let mut pmd_idx;
+        let mut pte_idx;
 
         let mut current_addr = target;
         let mut c = 0;
 
         while c < count {
-            let mut pgd_idx = ProcessPageTable::index::<PGD>(current_addr);
-            let mut pud_idx = ProcessPageTable::index::<PUD>(current_addr);
-            let mut pmd_idx = ProcessPageTable::index::<PMD>(current_addr);
-            let mut pte_idx = ProcessPageTable::index::<PTE>(current_addr);
+            pgd_idx = ProcessPageTable::index::<PGD>(current_addr);
+            pud_idx = ProcessPageTable::index::<PUD>(current_addr);
+            pmd_idx = ProcessPageTable::index::<PMD>(current_addr);
+            pte_idx = ProcessPageTable::index::<PTE>(current_addr);
 
             let mut _pud_mapping: PerCPUPageMappingGuard;
             let mut _pmd_mapping: PerCPUPageMappingGuard;
             let mut _pte_mapping: PerCPUPageMappingGuard;
 
-            let mut pud_table: &mut ProcessPageTablePage;
-            let mut pmd_table: &mut ProcessPageTablePage;
-            let mut pte_table: &mut ProcessPageTablePage;
+            let pud_table: &mut ProcessPageTablePage;
+            let pmd_table: &mut ProcessPageTablePage;
+            let pte_table: &mut ProcessPageTablePage;
 
             let table_flags = ProcessPageFlags::PRESENT | ProcessPageFlags::WRITABLE |
                 ProcessPageFlags::USER_ACCESSIBLE | ProcessPageFlags::ACCESSED;

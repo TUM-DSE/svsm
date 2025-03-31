@@ -1,3 +1,4 @@
+#[allow(unused_imports)]
 use core::arch::asm;
 
 #[cfg(any(feature = "boottime", feature = "bench_mem", feature = "breakdown"))]
@@ -12,13 +13,13 @@ pub fn outb(value: u64) {
 
 #[cfg(not(any(feature = "boottime", feature = "bench_mem", feature = "breakdown")))]
 #[inline(always)]
-pub fn outb(value: u64) {
+pub fn outb(_value: u64) {
    return;
 }
 
 #[cfg(not(feature = "breakdown"))]
 #[inline(always)]
-pub fn breakdown_outb(value: u64) {
+pub fn breakdown_outb(_value: u64) {
     return;
 }
 

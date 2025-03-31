@@ -1,9 +1,10 @@
+extern crate alloc;
+use alloc::vec::Vec;
 use crate::address::{PhysAddr, VirtAddr};
 use crate::cpu::control_regs::read_cr3;
 use crate::cpu::msr::rdtsc;
-use crate::debug::stacktrace::print_stack;
 use crate::locking::SpinLock;
-use crate::mm::pagetable::{get_init_pgtable_locked, PTEntry, PTEntryFlags, PageTable, PageTableRef};
+use crate::mm::pagetable::{get_init_pgtable_locked, PTEntry, PTEntryFlags, PageTable};
 use crate::process_manager::outb::outb;
 use crate::protocols::errors::SvsmReqError;
 use crate::sev::SevSnpError;
@@ -23,10 +24,7 @@ use crate::{paddr_as_u64_slice, map_paddr, vaddr_as_u64_slice};
 use crate::mm::memory::get_memory_region_from_map;
 use crate::address::Address;
 use crate::sev::{rmp_adjust, RMPFlags};
-
-use core::ops::Index;
 use core::ptr::replace;
-
 use super::memory_helper::ZERO_PAGE;
 
 const PREALLOCATED_SIZE: u64 = 4194304; // 16 GiB
@@ -241,13 +239,10 @@ impl ProcessMemConfig{
         const MEM_TEST_PAGES: u64 = 256;
         log::info!("Memory Benchmark pvalidate/rmpadjust ({} Pages)", MEM_TEST_PAGES);
         let original_page_base = self.page_base;
-        let mut total = 0;
 
         // create percpupage mpping guard for each page
-        extern crate alloc;
-        use alloc::vec::Vec;
         let mut mapping_list = Vec::new();
-        for i in 0..MEM_TEST_PAGES {
+        for _ in 0..MEM_TEST_PAGES {
             let addr = PhysAddr::from(self.page_base);
             self.page_base = self.page_base + PAGE_SIZE;
             let mapping = PerCPUPageMappingGuard::create_4k(PhysAddr::from(addr)).unwrap();
@@ -270,7 +265,7 @@ impl ProcessMemConfig{
         // bench rmpadjust
         let total_start = rdtsc();
         outb(130);
-        for (_mapping, phys, virt) in mapping_list.iter() {
+        for (_mapping, _phys, virt) in mapping_list.iter() {
             rmp_adjust(*virt, RMPFlags::VMPL3 | RMPFlags::RWX, PageSize::Regular).unwrap();
         }
         outb(131);
@@ -284,7 +279,7 @@ impl ProcessMemConfig{
     pub fn preallocate_memory(&mut self) {
         log::info!("Memory Preallocation ({} Pages)", PREALLOCATED_SIZE);
         let page_count = PREALLOCATED_SIZE;
-        for i in 0..page_count {
+        for _ in 0..page_count {
             let p = self.get_next_page();
             self.free_page(u64::from(p));
         }
@@ -307,7 +302,7 @@ impl ProcessMemConfig{
     }
 
     pub fn prepare_free_pages(&mut self, size: u64) -> PhysAddr {
-        for i in 0..size {
+        for _ in 0..size {
             let addr = PhysAddr::from(self.page_base);
             ProcessMemConfig::validate_and_clear(u64::from(addr));
             self.page_base = self.page_base + PAGE_SIZE;
@@ -317,7 +312,7 @@ impl ProcessMemConfig{
     }
 
     pub fn free_page(&mut self, paddr: u64) {
-        let (map_, s) = paddr_as_u64_slice!(PhysAddr::from(paddr));
+        let (_map_, s) = paddr_as_u64_slice!(PhysAddr::from(paddr));
         _ = unsafe {replace(s, ZERO_PAGE)};
         let idx = self.free_page_list_used_len as u64;
         let addr = self.free_page_list + (idx * 8);
