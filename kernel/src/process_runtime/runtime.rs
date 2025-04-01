@@ -20,6 +20,9 @@ use crate::sev::rmp_adjust;
 use crate::process_manager::process_memory::{PGD, addr_to_idx};
 use crate::process_manager::memory_channels::{INPUT_VADDR, OUTPUT_VADDR};
 
+#[cfg(feature = "stat")]
+use core::sync::atomic;
+
 const TRUSTLET_VMPL: u64 = 1;
 
 pub trait ProcessRuntime {
