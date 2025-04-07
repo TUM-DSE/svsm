@@ -5,7 +5,7 @@
 // Author: Vasant Karasulli <vkarasulli@suse.de>
 
 use crate::cpu::control_regs::{cr0_sse_enable, cr4_osfxsr_enable, cr4_xsave_enable};
-use crate::cpu::cpuid::CpuidResult;
+use crate::cpu::cpuid::{cpuid_table_raw, CpuidResult};
 use core::arch::x86_64::{_xgetbv, _xsetbv};
 
 const CPUID_EDX_SSE1: u32 = 25;
@@ -15,8 +15,15 @@ const XCR0_X87_ENABLE: u64 = 0x1;
 const XCR0_SSE_ENABLE: u64 = 0x2;
 const XCR0_YMM_ENABLE: u64 = 0x4;
 
+fn cpuid_(eax: u32, ecx: u32) -> CpuidResult {
+   match cpuid_table_raw(eax, ecx, 0, 0){
+       Some(r) => r,
+       None => CpuidResult{eax: 0, ebx: 0, ecx: 0, edx: 0}
+   }
+}
+
 fn legacy_sse_supported() -> bool {
-    let res = CpuidResult::get(1, 0);
+    let res = cpuid_(1, 0);
     (res.edx & (1 << CPUID_EDX_SSE1)) != 0
 }
 
@@ -30,12 +37,12 @@ fn legacy_sse_enable() {
 }
 
 fn extended_sse_supported() -> bool {
-    let res = CpuidResult::get(0xD, 1);
+    let res = cpuid_(0xD, 1);
     (res.eax & 0x7) == 0x7
 }
 
 fn xsave_supported() -> bool {
-    let res = CpuidResult::get(1, 0);
+    let res = cpuid_(1, 0);
     (res.ecx & (1 << CPUID_ECX_XSAVE)) != 0
 }
 
@@ -48,7 +55,7 @@ fn xcr0_set() {
 }
 
 pub fn get_xsave_area_size() -> u32 {
-    let res = CpuidResult::get(0xD, 0);
+    let res = cpuid_(0xD, 0);
     if (res.eax & (1 << CPUID_EAX_XSAVEOPT)) == 0 {
         panic!("XSAVEOPT unsupported");
     }
@@ -56,7 +63,7 @@ pub fn get_xsave_area_size() -> u32 {
 }
 
 fn extended_sse_enable() {
-    if extended_sse_supported() && xsave_supported() {
+    if /* extended_sse_supported() && */ xsave_supported() {
         cr4_xsave_enable();
         xcr0_set();
     } else {
