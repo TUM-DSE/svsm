@@ -21,6 +21,13 @@ pub const TP_MANIFEST_START_VADDR: u64 = 0x100_0000_0000;
 pub const TP_LIBOS_START_VADDR: u64 = 0x180_0000_0000;
 pub const TP_FUNCTION_START_VADDR: u64 = 0x140_0000_0000;
 
+
+pub mod stat {
+    use core::sync::atomic::AtomicU64;
+    pub static COW_PAGE_COUNT: AtomicU64 = AtomicU64::new(0);
+    pub static NON_COW_PAGE_COUNT: AtomicU64 = AtomicU64::new(0);
+}
+
 // Gramine PAL protection flags (pal_prot_flags_t)
 bitflags! {
     #[repr(transparent)]
@@ -191,10 +198,7 @@ macro_rules! check_replace_cow_table {
             rmp_adjust(_new_mapping.virt_addr(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
             $table[$idx].set(new_page, $input_flags);
         }
-
-
     }}
-
 }
 
 
@@ -441,6 +445,103 @@ impl ProcessPageTableRef {
 
 
 
+        flush_tlb_global();
+        log::info!("Finilzaing done");
+    }
+
+
+    #[cfg(feature="stat")]
+    #[allow(unused_mut)]
+    pub fn mem_stat(&self) {
+        let null = PhysAddr::null();
+        let mut _mapping_pgd: PerCPUPageMappingGuard;
+        let mut _mapping_pud: PerCPUPageMappingGuard;
+        let mut _mapping_pmd: PerCPUPageMappingGuard;
+        let mut _mapping_pte: PerCPUPageMappingGuard;
+
+        let mut pgd_table: &mut ProcessPageTablePage;
+        let mut pud_table: &mut ProcessPageTablePage;
+        let mut pmd_table: &mut ProcessPageTablePage;
+        let mut pte_table: &mut ProcessPageTablePage;
+
+        let mut pgd_idx: usize = 0;
+        let mut pud_idx: usize;
+        let mut pmd_idx: usize;
+        let mut pte_idx: usize;
+
+        (_mapping_pgd, pgd_table) = paddr_as_table!(self.process_page_table);
+
+        let mut cow_pages: u64 = 0;
+        let mut non_cow_pages: u64 = 1;
+
+        while pgd_idx < 512 {
+
+            let pud = pgd_table[pgd_idx];
+            if strip_paddr!(pud.0) == null {
+                pgd_idx += 1;
+                continue;
+            } else {
+                if pud.flags().contains(ProcessPageFlags::COPY_ON_WRITE) {
+                    cow_pages += 1;
+                } else {
+                    non_cow_pages += 1;
+                }
+                (_mapping_pud, pud_table) = paddr_as_table!(strip_paddr!(pud.0));
+            }
+            pud_idx = 0;
+            while pud_idx < 512 {
+                let pmd = pud_table[pud_idx];
+                if strip_paddr!(pmd.0) == null {
+                    pud_idx += 1;
+                    continue;
+                } else {
+                    if pmd.flags().contains(ProcessPageFlags::COPY_ON_WRITE) {
+                        cow_pages += 1;
+                    } else {
+                        non_cow_pages += 1;
+                    }
+                    (_mapping_pmd, pmd_table) = paddr_as_table!(strip_paddr!(pmd.0));
+                }
+                pmd_idx = 0;
+                while pmd_idx < 512 {
+                    let pte = pmd_table[pmd_idx];
+                    if strip_paddr!(pte.0) == null {
+                        pmd_idx += 1;
+                        continue;
+                    } else {
+                        if pte.flags().contains(ProcessPageFlags::COPY_ON_WRITE) {
+                            cow_pages += 1;
+                        } else {
+                            non_cow_pages += 1;
+                        }
+                        (_mapping_pte, pte_table) = paddr_as_table!(strip_paddr!(pte.0));
+                    }
+                    pte_idx = 0;
+                    while pte_idx < 512 {
+                        let page = pte_table[pte_idx];
+                        if strip_paddr!(page.0) == null {
+                            pte_idx += 1;
+                            continue;
+                        } else {
+                            if page.flags().contains(ProcessPageFlags::COPY_ON_WRITE) {
+                                cow_pages += 1;
+                            } else {
+                                non_cow_pages += 1;
+                            }
+                        }
+                        pte_idx += 1;
+                    }
+                    pmd_idx += 1;
+                }
+                pud_idx += 1;
+            }
+            pgd_idx += 1;
+        }
+
+        use core::sync::atomic::Ordering;
+        stat::COW_PAGE_COUNT.store(cow_pages,Ordering::Relaxed);
+        stat::NON_COW_PAGE_COUNT.store(non_cow_pages, Ordering::Relaxed);
+       
         flush_tlb_global();
         log::info!("Finilzaing done");
     }

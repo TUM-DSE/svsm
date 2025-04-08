@@ -51,6 +51,27 @@ impl MemoryChannel {
         self.output.unmount();
     }
 
+    #[cfg(not(feature = "boottime"))]
+    pub fn measure_input(&self) -> [u8; 64] {
+        use crate::attestation::monitor::measure;
+        use igvm_defs::PAGE_SIZE_4K;
+        self.input.mount();
+        let size = self.input.1 * PAGE_SIZE_4K;
+        let res = measure(ALLOCATION_RANGE_VIRT_START, size);
+        self.input.unmount();
+        return res;
+    }
+
+    #[cfg(not(feature = "boottime"))]
+    pub fn measure_output(&self) -> [u8; 64] {
+        use crate::attestation::monitor::measure;
+        use igvm_defs::PAGE_SIZE_4K;
+        self.output.mount();
+        let size = self.input.1 * PAGE_SIZE_4K;
+        let res =  measure(ALLOCATION_RANGE_VIRT_START, size);
+        self.output.unmount();
+        return res;
+    }
 
     fn allocate_range(&mut self, page_table_ref: &mut ProcessPageTableRef, size: usize, start: u64) -> AllocationRange{
         let mut r = AllocationRange::default();

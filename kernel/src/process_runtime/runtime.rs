@@ -246,6 +246,10 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
             trustlet.context.channel.inflate_input(vmsa.cr3, function_arg_size as usize);
             trustlet.context.channel.inflate_output(vmsa.cr3, result_size as usize);
             trustlet.context.channel.copy_into(function_arg, guest_page_table, function_arg_size as usize);
+            #[cfg(not(feature = "boottime"))]
+            {
+            trustlet.measurements.input_data = trustlet.context.channel.measure_input();
+            }
             breakdown_outb(213);
         } TrustletInvocationType::FILEATTR | TrustletInvocationType::OPEN | TrustletInvocationType::READ => {
             // log::info!("Invoking Trustlet: gueset request: {:?}", invocation_type);
@@ -587,7 +591,20 @@ impl ProcessRuntime for PALContext  {
             self.guest_page_table,
             self.result_size as usize);
         self.return_value = TrustletReturnType::GETRESULT as u64;
+        #[cfg(not(feature = "boottime"))]
+        {
+        self.process.measurements.output_data = self.process.context.channel.measure_output();
+        }
         breakdown_outb(221);
+
+        #[cfg(feature="stat")]
+        {
+            let page_table = self.vmsa.cr3;
+            let mut page_table_ref = ProcessPageTableRef::default();
+            page_table_ref.set_external_table(page_table);
+            page_table_ref.mem_stat();
+        }
+
         false
     }
 

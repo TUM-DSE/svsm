@@ -31,6 +31,8 @@ pub fn get_stat(_params: &mut RequestParams) -> Result<(), SvsmReqError> {
     log::error!("PVALIDATE: {}", crate::sev::utils::stat::PVALIDATE_COUNT.load(Ordering::Relaxed));
     log::error!("PF: {}", crate::sev::utils::stat::PF_COUNT.load(Ordering::Relaxed));
     log::error!("COW: {}", crate::sev::utils::stat::COW_COUNT.load(Ordering::Relaxed));
+    log::error!("COW_PAGES: {}", super::process_paging::stat::COW_PAGE_COUNT.load(Ordering::Relaxed));
+    log::error!("NON_COW_PAGES: {}", super::process_paging::stat::NON_COW_PAGE_COUNT.load(Ordering::Relaxed));
     Ok(())
 }
 

@@ -74,6 +74,8 @@ pub struct ProcessMeasurements {
     pub manifest_measurement: [u8; 64],
     pub libos_measurement: [u8; 64],
     pub function_measurement: [u8; 64],
+    pub input_data: [u8; 64],
+    pub output_data: [u8; 64],
 }
 
 impl Default for ProcessMeasurements {
@@ -83,6 +85,8 @@ impl Default for ProcessMeasurements {
             manifest_measurement: [0; HASH_SIZE],
             libos_measurement: [0; HASH_SIZE],
             function_measurement: [0; HASH_SIZE],
+            input_data: [0; HASH_SIZE],
+            output_data: [0; HASH_SIZE],
         }
     }
 }
