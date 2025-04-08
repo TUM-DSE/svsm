@@ -23,7 +23,7 @@ pub mod exception_handling;
 
 static MONITOR_INIT_STATE: ImmutAfterInitCell<bool> = ImmutAfterInitCell::new(false);
 const MONITOR_INIT_STATE_TRUE: bool = true;
-pub const PROCESS_STORE_SIZE: u32 = 128;
+pub const PROCESS_STORE_SIZE: u32 = 64;
 
 pub fn monitor_init(){
     if *MONITOR_INIT_STATE {
