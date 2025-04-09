@@ -67,7 +67,7 @@ impl MemoryChannel {
         use crate::attestation::monitor::measure;
         use igvm_defs::PAGE_SIZE_4K;
         self.output.mount();
-        let size = self.input.1 * PAGE_SIZE_4K;
+        let size = self.output.1 * PAGE_SIZE_4K;
         let res =  measure(ALLOCATION_RANGE_VIRT_START, size);
         self.output.unmount();
         return res;

@@ -104,7 +104,9 @@ impl TrustedProcess {
             trustlet.base.alloc_range_function.1 = size;
 
             log::debug!("Measuring trustlet function");
+            breakdown_outb(205);
             trustlet.measurements.function_measurement = measure(function_code.into(), size);
+            breakdown_outb(206);
             log::debug!("TODO: Compare with function measurement of the policy");
 
             log::debug!("Adding trustlet function");
@@ -112,7 +114,7 @@ impl TrustedProcess {
             trustlet.context.page_table_ref.add_function(function_code, size);
             function_code_range.unmount();
             function_code_range.delete();
-            breakdown_outb(205);
+            breakdown_outb(207);
         }
         trustlet
     }
