@@ -248,7 +248,9 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
             trustlet.context.channel.copy_into(function_arg, guest_page_table, function_arg_size as usize);
             #[cfg(not(feature = "boottime"))]
             {
+            breakdown_outb(190);
             trustlet.measurements.input_data = trustlet.context.channel.measure_input();
+            breakdown_outb(191);
             }
             breakdown_outb(213);
         } TrustletInvocationType::FILEATTR | TrustletInvocationType::OPEN | TrustletInvocationType::READ => {
@@ -407,7 +409,7 @@ impl ProcessRuntime for PALContext  {
 
         match rax {
             // normal cpuid
-            0..=23 | 0x80000000..=0x80000021 => {
+            0..=0x24 | 0x80000000..=0x80000021 => {
                 return self.pal_svsm_cpuid();
             }
             // monitor calls from the Gramine PAL
@@ -572,6 +574,7 @@ impl ProcessRuntime for PALContext  {
             Some(r) => r,
             None => CpuidResult{eax: 0,ebx: 0, ecx: 0, edx: 0}
         };
+
         self.vmsa.rax = res.eax as u64;
         self.vmsa.rbx = res.ebx as u64;
         self.vmsa.rcx = res.ecx as u64;
@@ -593,7 +596,9 @@ impl ProcessRuntime for PALContext  {
         self.return_value = TrustletReturnType::GETRESULT as u64;
         #[cfg(not(feature = "boottime"))]
         {
+        breakdown_outb(192);
         self.process.measurements.output_data = self.process.context.channel.measure_output();
+        breakdown_outb(193);
         }
         breakdown_outb(221);
 

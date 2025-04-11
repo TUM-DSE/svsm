@@ -57,7 +57,9 @@ impl TrustedProcess {
         let (pal_data, pal_range) = ProcessPageTableRef::copy_data_from_guest(pal, pal_size, pgt);
         log::debug!("pal_data {:?} pal_range {:?}", pal_data, pal_range);
         base.init_with_data(pal_data, pal_size, pal_range);
+        breakdown_outb(198);
         measurements.init_measurement = measure(pal_data.into(), pal_size);
+        breakdown_outb(199);
         pal_range.unmount();
         pal_range.delete();
         log::debug!("TODO: Compare with pal measurement of the policy");
@@ -65,7 +67,9 @@ impl TrustedProcess {
         let (manifest_data, manifest_range) = ProcessPageTableRef::copy_data_from_guest(manifest, manifest_size, pgt);
         log::debug!("manifest_range {:?}", manifest_range);
         base.add_manifest(manifest_data, manifest_size, manifest_range);
+        breakdown_outb(198);
         measurements.manifest_measurement = measure(manifest_data.into(), manifest_size);
+        breakdown_outb(199);
         manifest_range.unmount();
         manifest_range.delete();
         log::debug!("TODO: Compare with manifest measurement of the policy");
@@ -73,7 +77,9 @@ impl TrustedProcess {
         let (libos_data, libos_range) = ProcessPageTableRef::copy_data_from_guest(libos, libos_size, pgt);
         log::debug!("libos_range {:?}", libos_range);
         base.add_libos(libos_data, libos_size, libos_range);
+        breakdown_outb(198);
         measurements.libos_measurement = measure(libos_data.into(), libos_size);
+        breakdown_outb(199);
         libos_range.unmount();
         libos_range.delete();
         log::debug!("TODO: Compare with libos measurement of the policy");
