@@ -2,7 +2,9 @@
 use crate::cpu::tss::{X86Tss,TSS_LIMIT};
 use crate::locking::{RWLock, ReadLockGuard, WriteLockGuard};
 use crate::cpu::idt::common::{IdtEntry, DF_VECTOR, IDT, PF_VECTOR, GP_VECTOR};
-use crate::cpu::gdt::GDT;
+use crate::cpu::gdt::{GDTEntry, GDT};
+use crate::mm::PerCPUPageMappingGuard;
+use crate::process_manager::process_memory::allocate_page;
 use core::arch::global_asm;
 use cpuarch::vmsa::{VMSASegment, VMSA};
 use crate::process_manager::process_paging::ProcessPageFlags;
@@ -177,24 +179,29 @@ pub fn setup_exceptions(vmsa: &mut VMSA, page_table_ref: &ProcessPageTableRef) {
     vmsa.idt = vmsa_idt;
 
     // setup TSS
-    let mut tss = tss_trustlet_mut();
-    let tss_base = tss.base();
+    //let mut tss = tss_trustlet_mut();
+    const TSS_VADDR: u64 = TP_KERN_STACK_START_VADDR + 4096*2;
+    let tss_phys = allocate_page();
+    let tss_mapping = PerCPUPageMappingGuard::create_4k(tss_phys).unwrap();
+    let tss_vaddr = tss_mapping.virt_addr();
+    let tss = unsafe { &mut *tss_vaddr.as_mut_ptr::<X86Tss>() };
+    let tss_base = TSS_VADDR;//tss.base();
     let num_page = 1;
     // 1. setup kernel stack address
     tss.stacks[0] = (TP_KERN_STACK_START_VADDR + 4096*num_page).into();
     // 2. map the stack address to trustlet's page table
     page_table_ref.add_stack(TP_KERN_STACK_START_VADDR.into(), num_page);
     // 3. map the TSS to trustlet's page table
-    let tss_phys = svsm_page_table_ref.virt_to_phys(tss_base.into());
-    assert!(tss_phys != PhysAddr::null());
+    //let tss_phys = svsm_page_table_ref.virt_to_phys(tss_base.into());
+    //assert!(tss_phys != PhysAddr::null());
     //assert!(page_table_ref.virt_to_phys(tss_base.into()) == PhysAddr::null());
-    page_table_ref.map_4k_page(tss_base.into(), tss_phys, ProcessPageFlags::data());
+    page_table_ref.map_4k_page(TSS_VADDR.into(), tss_phys, ProcessPageFlags::data());
     // 4. rmpadjust for TSS
-    rmp_adjust(tss_base.into(), RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
+    rmp_adjust(tss_vaddr, RMPFlags::VMPL1 | RMPFlags::RWX, PageSize::Regular).unwrap();
     let vmsa_tss = VMSASegment {
         selector: 6*8,
         flags: 0x89, // TSS
-        base: tss_base,
+        base: TSS_VADDR,
         limit: TSS_LIMIT as u32-1,
     };
     vmsa.tr = vmsa_tss;
@@ -208,7 +215,20 @@ pub fn setup_exceptions(vmsa: &mut VMSA, page_table_ref: &ProcessPageTableRef) {
     // 4. data_64_user
     // 5. null
     // 6-7. TSS
-    let (desc0, desc1) = tss.to_gdt_entry();
+    let mut desc0: u64 = 0;
+    let mut desc1: u64 = 0;
+    desc0 |= TSS_LIMIT & 0xffffu64;
+    desc0 |= ((TSS_LIMIT >> 16) & 0xfu64) << 48;
+    desc0 |= (TSS_VADDR & 0x00ff_ffffu64) << 16;
+    desc0 |= (TSS_VADDR & 0xff00_0000u64) << 32;
+    desc1 |= TSS_VADDR >> 32;
+    desc0 |= 1u64 << 47;
+    desc0 |= 0x9u64 << 40;
+
+    let desc0 = GDTEntry::from_raw(desc0);
+    let desc1 = GDTEntry::from_raw(desc1);
+
+    //let (desc0, desc1) = tss.to_gdt_entry();
     unsafe{
         // this sets the entry 6 for TSS
         gdt_trustlet_mut().set_tss_entry(desc0, desc1);
