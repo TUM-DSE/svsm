@@ -21,14 +21,14 @@ key_pair* get_keys()
 
 key_pair* gen_keys() 
 {
-	// Generate private key
-	for(int i = 0; i < 32; i += 4)
-	{
-		__builtin_ia32_rdrand64_step((unsigned long long*)(monitor_keys.private_key + i));
-	}
+    // Generate private key
+    for(int i = 0; i < 32/8; i += 1)
+    {
+        __builtin_ia32_rdrand64_step((unsigned long long*)(monitor_keys.private_key + i * 8));
+    }
 
-	Hacl_Curve25519_51_secret_to_public(monitor_keys.public_key, monitor_keys.private_key);
-	return &monitor_keys;
+    Hacl_Curve25519_51_secret_to_public(monitor_keys.public_key, monitor_keys.private_key);
+    return &monitor_keys;
 }
 
 unsigned int get_key_size()

@@ -79,9 +79,7 @@ impl CpuidResult {
 }
 
 pub fn cpuid_table_raw(eax: u32, ecx: u32, xcr0: u64, xss: u64) -> Option<CpuidResult> {
-    //FIXME
-    //let count: usize = CPUID_PAGE.count as usize;
-    let count: usize = 64;
+    let count: usize = CPUID_PAGE.count as usize;
     for i in 0..count {
         if eax == CPUID_PAGE.func[i].eax_in
             && ecx == CPUID_PAGE.func[i].ecx_in
@@ -107,7 +105,7 @@ pub fn cpuid_table(eax: u32) -> Option<CpuidResult> {
 pub fn dump_cpuid_table() {
     let count = CPUID_PAGE.count as usize;
 
-    log::trace!("CPUID Table entry count: {}", count);
+    log::error!("CPUID Table entry count: {}", count);
 
     for i in 0..count {
         let eax_in = CPUID_PAGE.func[i].eax_in;
@@ -118,7 +116,7 @@ pub fn dump_cpuid_table() {
         let ebx_out = CPUID_PAGE.func[i].ebx_out;
         let ecx_out = CPUID_PAGE.func[i].ecx_out;
         let edx_out = CPUID_PAGE.func[i].edx_out;
-        log::trace!("EAX_IN: {:#010x} ECX_IN: {:#010x} XCR0_IN: {:#010x} XSS_IN: {:#010x} EAX_OUT: {:#010x} EBX_OUT: {:#010x} ECX_OUT: {:#010x} EDX_OUT: {:#010x}",
+        log::error!("EAX_IN: {:#010x} ECX_IN: {:#010x} XCR0_IN: {:#010x} XSS_IN: {:#010x} EAX_OUT: {:#010x} EBX_OUT: {:#010x} ECX_OUT: {:#010x} EDX_OUT: {:#010x}",
                     eax_in, ecx_in, xcr0_in, xss_in, eax_out, ebx_out, ecx_out, edx_out);
     }
 }
