@@ -245,7 +245,9 @@ pub fn invoke_trustlet(params: &mut RequestParams) -> Result<(), SvsmReqError> {
             // log::info!("Invoking Trustlet: Normal");
             trustlet.context.channel.inflate_input(vmsa.cr3, function_arg_size as usize);
             trustlet.context.channel.inflate_output(vmsa.cr3, result_size as usize);
-            trustlet.context.channel.copy_into(function_arg, guest_page_table, function_arg_size as usize);
+            if function_arg_size > 1 {
+                trustlet.context.channel.copy_into(function_arg, guest_page_table, function_arg_size as usize);
+            }
             #[cfg(not(feature = "boottime"))]
             {
             breakdown_outb(190);
@@ -381,6 +383,8 @@ pub fn create_channel(params: &mut RequestParams) -> Result<(), SvsmReqError> {
     //  Trustlet2 CR3 -> PGD [INPUT_VADDR]  -> <PUD A> -> ...
     let target_entry = trustlet1_pgd_table[trustlet1_output_channel_pgd_idx];
     trustlet2_pgd_table[trustlet2_input_channel_pgd_idx] = target_entry;
+
+    trustlet2.context.channel.input = trustlet1.context.channel.output;
 
     // TODO: free trustlet2's old input channel pages
 
@@ -577,7 +581,11 @@ impl ProcessRuntime for PALContext  {
 
         self.vmsa.rax = res.eax as u64;
         self.vmsa.rbx = res.ebx as u64;
-        self.vmsa.rcx = res.ecx as u64;
+        if eax == 1 {
+            self.vmsa.rcx = res.ecx as u64 | 0x8000000;
+        } else {
+            self.vmsa.rcx = res.ecx as u64;
+        }
         self.vmsa.rdx = res.edx as u64;
         return true;
     }

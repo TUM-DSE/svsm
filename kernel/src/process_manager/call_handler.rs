@@ -52,7 +52,6 @@ pub fn diff_attestation(params: &mut RequestParams) -> Result<(), SvsmReqError>{
 fn monitor_init(params: &mut RequestParams) -> Result<(), SvsmReqError>{
 
     log::info!("Initilization Monitor");
-
     /* Request a monitor measurement upon initialization */
     params.rdx = attestation::monitor::MONITOR_ATTESTATION;
     params.rcx = 0;
